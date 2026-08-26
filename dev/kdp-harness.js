@@ -116,7 +116,7 @@ function build(bookId, opts) {
   });
 
   const front = mod.kdpDefaultFront(book.mode, book.difficulty, {
-    title: book.title, puzzleCount: book.puzzleCount, year: 2026,
+    bookName: book.title, volume: book.volume, puzzleCount: book.puzzleCount, year: 2026,
     bands: mod.kdpBands(book)
   });
   const solPage = plan.solutionStart;
@@ -169,6 +169,7 @@ if (require.main === module) {
       total: proof ? Math.min(proof, r.plan.total) : r.plan.total,
       fullTotal: r.plan.total, presetId: r.plan.presetId, gutterIn: r.plan.gutterIn,
       dividerPage: r.plan.dividerPage, solutionStart: r.plan.solutionStart,
+      puzzleStart: r.plan.puzzleStart,
       puzzlePages: r.plan.puzzlePages, solutionPages: r.plan.solutionPages,
       trimPt: r.mod.kdpTrimPt(r.plan.preset), category: r.plan.category,
       kinds: r.plan.pages.slice(0, proof || r.plan.pages.length).map(function (p) { return p.kind; }),

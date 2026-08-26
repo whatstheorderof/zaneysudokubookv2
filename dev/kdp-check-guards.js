@@ -164,7 +164,10 @@ allows("a book with no bands behaves as one band of its difficulty", function ()
 console.log("\n=== target length ===");
 
 allows("a target page count works back to a puzzle count that fits", function () {
-  const cases = [["5.06x7.81/1up", 402, 336], ["8.5x11/2up", 110, 160], ["8.5x11/1up", 108, 84]];
+  /* Page counts moved when the front matter grew to eight pages: three
+     how-to-play pages plus the QR page. These are the counts the shipped
+     front matter actually produces. */
+  const cases = [["5.06x7.81/1up", 404, 336], ["8.5x11/2up", 112, 160], ["8.5x11/1up", 110, 84]];
   const out = [];
   for (const c of cases) {
     const r = mod.kdpPuzzlesForPages(c[0], c[1]);
@@ -262,7 +265,7 @@ console.log("\n=== cover ===");
 allows("the cover spec follows KDP's formulas", function () {
   const plan = mod.kdpPlan("5.06x7.81/1up", 336);
   const c = mod.kdpCoverSpec(plan, "white");
-  const spine = 402 * 0.002252;
+  const spine = plan.total * 0.002252;
   const wantW = 2 * 5.06 + spine + 0.25, wantH = 7.81 + 0.25;
   if (Math.abs(c.fullIn[0] - wantW) > 1e-9) throw new Error("width " + c.fullIn[0] + " want " + wantW);
   if (Math.abs(c.fullIn[1] - wantH) > 1e-9) throw new Error("height " + c.fullIn[1] + " want " + wantH);
@@ -349,7 +352,7 @@ allows("every viable puzzle count gives an even total with a recto divider", fun
       if (p.pages[p.dividerPage - 1].kind !== "divider") throw new Error(id + " @ " + n + " divider index wrong");
       if (p.pages[p.dividerPage].kind !== "blank") throw new Error(id + " @ " + n + " divider verso not blank");
       if (p.pages[p.total - 2].kind !== "series") throw new Error(id + " @ " + n + " series page not at last-1");
-      if (p.pages[p.total - 1].kind !== "blank") throw new Error(id + " @ " + n + " last page not blank");
+      if (p.pages[p.total - 1].kind !== "backpage") throw new Error(id + " @ " + n + " last page is not the back page");
       const sol = [].concat.apply([], p.pages.filter(function (q) { return q.kind === "solutions"; })
         .map(function (q) { return q.items; }));
       if (sol.length !== n) throw new Error(id + " @ " + n + " has " + sol.length + " solution slots");
@@ -446,6 +449,41 @@ refuses("a character the embedded subset lacks aborts the export", function () {
   };
   mod.kdpAssembler(require("jspdf").jsPDF, H.FONTS, plan, cfg, null);
 }, "cannot render");
+
+allows("the half title is three lines: company, book, volume", function () {
+  const f = mod.kdpDefaultFront("killer", "easy", {});
+  if (f.imprint !== "Zaney Sudoku") throw new Error("imprint is " + f.imprint);
+  if (f.bookName !== "Killer Sudoku") throw new Error("bookName is " + f.bookName);
+  if (f.volume !== "Vol 1") throw new Error("volume defaults to " + JSON.stringify(f.volume));
+  /* The imprint is the publisher, so it belongs on the page but not in the
+     title the copyright page and the PDF metadata carry. */
+  if (f.title !== "Killer Sudoku Vol 1") throw new Error("title is " + f.title);
+  if (f.title.indexOf(f.imprint) >= 0) throw new Error("the imprint leaked into the title");
+  const named = mod.kdpDefaultFront("classic", "medium",
+    { bookName: "Coffee Break Sudoku", volume: "Vol 4" });
+  if (named.title !== "Coffee Break Sudoku Vol 4") throw new Error("override: " + named.title);
+  /* A volume can still be cleared deliberately; only "undefined" means default. */
+  if (mod.kdpDefaultFront("x", "easy", { volume: "" }).volume !== "") throw new Error("volume not clearable");
+  return [f.imprint, f.bookName, f.volume].join(" / ");
+});
+
+allows("every mode has as many how-to-play pages as the plan reserves", function () {
+  const plan = mod.kdpPlan("5.06x7.81/1up", 336);
+  const reserved = plan.pages.filter(function (p) { return p.kind === "howto"; }).length;
+  const out = [];
+  for (const m of ["killer", "classic", "x", "hyper"]) {
+    const f = mod.kdpDefaultFront(m, m === "classic" ? "medium" : "easy", {});
+    if (f.howto.length !== reserved)
+      throw new Error(m + " has " + f.howto.length + " how-to page(s), the plan reserves " + reserved);
+    out.push(m + ":" + f.howto.length);
+  }
+  /* And the QR pages the plan promises are actually in it. */
+  if (!plan.pages.some(function (p) { return p.kind === "playmore"; }))
+    throw new Error("no QR page in the front matter");
+  if (plan.pages[plan.total - 1].kind !== "backpage")
+    throw new Error("the last leaf is not the back page");
+  return out.join(" ") + ", plus the QR page front and back";
+});
 
 allows("the shipped front-matter defaults are fully covered by the subset", function () {
   const modes = [["killer", "hard"], ["classic", "medium"], ["classic", "cowards"],

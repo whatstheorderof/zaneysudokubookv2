@@ -123,6 +123,15 @@ const KDP_GUTTER_TIERS = [
   { min: 501, max: 700, gutterIn: 0.75  }
 ];
 
+/* The shape of the front and back matter. Page counts live here rather than
+   being implied by the code, so a mode that needs a fourth how-to page is a
+   data change — the plan pads around whatever this says. */
+const KDP_FRONT = {
+  howtoPages: 3,   /* must equal KDP_HOWTO[mode].length for every mode */
+  playMore: true,  /* the QR page in the front matter                  */
+  backPage: true   /* the QR page as the final leaf, instead of a blank */
+};
+
 const KDP_MARGIN_IN = 0.4;    /* top / bottom / outside. KDP minimum is 0.25 */
 /* Floor under the gutter. Set to 0 to use KDP's tier values verbatim, which
    at 24–150pp would make the binding margin (0.375) NARROWER than the outer
@@ -138,13 +147,18 @@ const KDP_LAYOUT = {
   solLabelPt: 8, solColGapPt: 16, solRowGapPt: 8,
   minTypePt: 5,               /* legibility floor — hard abort below this    */
   boxLineW: 1.1, cellLineW: 0.35, cageLineW: 0.5,
-  givenRatio: 0.60, solRatio: 0.56, cageRatio: 0.30,
+  givenRatio: 0.60, solRatio: 0.56, cageRatio: 0.24,
   /* A killer cell can hold both a cage sum and a given digit. The sum owns the
-     top-left corner, so in a caged grid the digits are a little smaller and sit
-     in the space beneath it — otherwise they collide, which is what an easy
-     killer book (five givens per grid) makes obvious. */
-  givenRatioCaged: 0.52, solRatioCaged: 0.50,
-  digitOptical: 0.55,   /* digits sit on the baseline, so the em box centres a touch low */
+     top-left corner, so in a caged grid the digits are a shade smaller and sit
+     a little below centre — far enough to clear the sum's ink, and no further. */
+  givenRatioCaged: 0.56, solRatioCaged: 0.54,
+  /* Measured off the embedded Inter at both weights. With jsPDF's "middle"
+     baseline the ink of a digit runs from 0.388em above the requested y to
+     0.356em below it. Clearance is worked out from that, not from the em box:
+     the em box is a third taller than the digit, and reserving all of it is
+     what used to shove every given onto the floor of its cell. */
+  digitInkUp: 0.388, digitInkDown: 0.356,
+  digitClearIn: 0.04,   /* printed gap between a cage sum and the digit, in cells */
   tint: 236                   /* light region tint for Sudoku X / Hyper      */
 };
 
@@ -254,8 +268,13 @@ function kdpPlan(presetId, puzzleCount){
   const push = (kind, extra) => { pages.push(Object.assign({kind, folio:false}, extra||{})); };
 
   push("halftitle"); push("copyright");
-  push("howto", {part:1}); push("howto", {part:2});
-  push("about"); push("blank", {reason:"front-matter pad"});
+  for(let i=1;i<=KDP_FRONT.howtoPages;i++) push("howto", {part:i});
+  push("about");
+  if(KDP_FRONT.playMore) push("playmore");
+  /* Puzzles open on a recto, so the front matter is padded to an even length
+     whatever it contains. */
+  while(pages.length % 2 !== 0) push("blank", {reason:"front-matter pad"});
+  const puzzleStart = pages.length + 1;
 
   const puzPages = Math.ceil(puzzleCount / P.puzzlesPerPage);
   for(let i=0;i<puzPages;i++){
@@ -291,18 +310,19 @@ function kdpPlan(presetId, puzzleCount){
   let pad = 0;
   if(pages.length % 2 === 1){ push("blank", {reason:"even-total pad"}); pad = 1; }
   push("series");
-  push("blank", {reason:"final blank"});
+  push(KDP_FRONT.backPage ? "backpage" : "blank", {reason:"final leaf"});
 
   const total = pages.length;
   if(total % 2 !== 0) throw new Error("Pagination bug: odd total "+total);
   if(((dividerPage) % 2) !== 1) throw new Error("Pagination bug: divider on verso");
+  if((puzzleStart % 2) !== 1) throw new Error("Pagination bug: puzzles start on a verso");
 
   const tier = kdpGutterIn(total);
 
   return {
     presetId, preset:P, puzzleCount, pages, total,
     puzzlePages: puzPages, solutionPages: solPages,
-    puzzleStart: 7, dividerPage, solutionStart: solStart,
+    puzzleStart, dividerPage, solutionStart: solStart,
     recotFiller: filler, evenPad: pad,
     gutterIn: tier.gutterIn, gutterTier: tier,
     category: kdpTrimCategory(P)
@@ -642,34 +662,41 @@ function kdpDrawGrid(ctx, P, x, y, size, opt){
     doc.setLineDashPattern([], 0);
 
     const sumPt = cell*L.cageRatio;
+    /* Ink top of the sum, far enough below the dashed cage border to read as
+       sitting inside the cage rather than on it. */
+    const sumTop = inset*1.5;
+    const sumInk = L.digitInkUp + L.digitInkDown;
     doc.setFont(KDP_FONT_FAMILY, "bold");
     doc.setFontSize(sumPt);
     doc.setTextColor(40,40,40);
     for(const g of P.cages){
       const a = g.cells[0], r=(a/9)|0, c=a%9;
       const s = String(g.sum);
-      const tx = x+c*cell+inset*2.0, ty = y+r*cell+inset*1.3;
+      const tx = x+c*cell+inset*2.0, ty = y+r*cell+sumTop;
       const w = doc.getTextWidth(s);
       doc.setFillColor(255,255,255);
-      ctx.rect(tx-sumPt*0.14, ty, w+sumPt*0.28, sumPt*1.02, "F");
-      ctx.text(s, tx, ty+sumPt*0.52, {baseline:"middle"});
+      ctx.rect(tx-sumPt*0.10, ty-sumPt*0.05, w+sumPt*0.20, sumPt*(sumInk+0.11), "F");
+      ctx.text(s, tx, ty+sumPt*L.digitInkUp,
+               {baseline:"middle", ink:{up:L.digitInkUp, down:L.digitInkDown}});
     }
-    sumBand = inset*1.3 + sumPt*1.02;
+    /* Where the sum's knockout ends, measured from the top of the cell. */
+    sumBand = sumTop + sumPt*(sumInk+0.06);
     doc.setDrawColor(0);
   }
 
-  /* Centre the digit in the part of the cell the sum has not claimed. With no
-     sums that is the whole cell and nothing moves; with sums every digit in the
-     grid shifts by the same amount, so they stay level with each other. */
+  /* Digits are centred in the cell. In a caged grid they drop by the smallest
+     amount that clears the sum's ink — a few per cent of a cell, the same for
+     every digit in the grid, so the rows still read as level. */
   const caged = sumBand > 0;
   const givenPt = cell*(caged ? L.givenRatioCaged : L.givenRatio);
   const solPt   = cell*(caged ? L.solRatioCaged   : L.solRatio);
-  /* Optically centred in whatever the sum band leaves, then clamped so the em
-     box can neither ride up into the sum nor drop out of the cell. With no sums
-     this lands exactly where it always did. */
+  /* The ink of a digit is not centred on the requested y — it sits 0.016em
+     high — so true optical centring nudges down by that much. Then the two
+     clamps: never into the sum above, never out of the cell below. */
   const digitCyFor = function(pt){
-    const half = pt/2;
-    return Math.min(Math.max(sumBand + (cell - sumBand)*L.digitOptical, sumBand + half), cell - half);
+    const centred = cell/2 + (L.digitInkUp - L.digitInkDown)/2*pt;
+    const floorY  = sumBand + cell*L.digitClearIn + L.digitInkUp*pt;
+    return Math.min(Math.max(centred, floorY), cell - L.digitInkDown*pt);
   };
   const givenCy = digitCyFor(givenPt);
   const solCy   = digitCyFor(solPt);
@@ -680,12 +707,14 @@ function kdpDrawGrid(ctx, P, x, y, size, opt){
       doc.setTextColor(0,0,0);
       doc.setFont(KDP_FONT_FAMILY, "bold");
       doc.setFontSize(givenPt);
-      ctx.text(String(P.sol[i]), x+c*cell+cell/2, y+r*cell+givenCy, {align:"center", baseline:"middle"});
+      ctx.text(String(P.sol[i]), x+c*cell+cell/2, y+r*cell+givenCy,
+               {align:"center", baseline:"middle", ink:{up:L.digitInkUp, down:L.digitInkDown}});
     } else if(opt.withSol){
       doc.setTextColor(20,20,20);
       doc.setFont(KDP_FONT_FAMILY, "normal");
       doc.setFontSize(solPt);
-      ctx.text(String(P.sol[i]), x+c*cell+cell/2, y+r*cell+solCy, {align:"center", baseline:"middle"});
+      ctx.text(String(P.sol[i]), x+c*cell+cell/2, y+r*cell+solCy,
+               {align:"center", baseline:"middle", ink:{up:L.digitInkUp, down:L.digitInkDown}});
     }
   }
   doc.setTextColor(0,0,0);
@@ -699,6 +728,51 @@ function kdpDrawGrid(ctx, P, x, y, size, opt){
 --------------------------------------------------------------------------- */
 const KDP_MODE_NAME = { killer:"Killer Sudoku", classic:"Classic Sudoku", x:"Sudoku X", hyper:"Hyper Sudoku" };
 
+const KDP_QR_URL = "https://zaneysudoku.com/";
+/* QR for KDP_QR_URL: 29x29 modules, version 3, error correction H (30%
+   recoverable), generated once and pinned here so every book carries the
+   identical code and the bytes never drift. Drawn as vector rectangles, not
+   an embedded image, so it is resolution-independent in print and pure black
+   ink on white — which is what a scanner wants and what KDP prints best. */
+const KDP_QR = [
+  "11111110001100110111001111111",
+  "10000010001001010010001000001",
+  "10111010001110101001101011101",
+  "10111010000100010101001011101",
+  "10111010100011001001001011101",
+  "10000010011010100111101000001",
+  "11111110101010101010101111111",
+  "00000000111000011110100000000",
+  "00110011110000111001011010000",
+  "10110101000001110111101110001",
+  "01011110111010010000001011010",
+  "01111001000000100000100010001",
+  "01000111100111010011010101111",
+  "01110101001011100101001101111",
+  "11101011101100101011011111011",
+  "00011001100101011101000011000",
+  "01100010011110001111100111001",
+  "01000001000101010000100100000",
+  "10001010011100000100101101000",
+  "00000100110110100101111011100",
+  "01001110000000111001111111100",
+  "00000000111001001111100011001",
+  "11111110100000101011101010110",
+  "10000010001011111000100010011",
+  "10111010001000110000111111100",
+  "10111010100111010101000011110",
+  "10111010100101100100100101001",
+  "10000010000000100110101011010",
+  "11111110001010111001101100010"
+];
+
+
+  /* Everything the help page at zaneysudoku.com/#/help tells a player, moved
+     into print: the rules, the three tips, where the puzzles come from, and
+     where to go next. The site's Controls section is the one thing left out —
+     arrow keys and note mode mean nothing on paper — and the pencil-mark advice
+     it carried is folded into the tips instead. Three pages per mode; the
+     count is KDP_FRONT.howtoPages and the plan pads around it. */
 const KDP_HOWTO = {
   killer: [
     [
@@ -714,10 +788,18 @@ const KDP_HOWTO = {
       {t:"h2", s:"Three things worth knowing"},
       {t:"lead", lead:"Learn the forced combinations. ", s:"A two-cell cage summing to 3 can only be 1+2. Sum 4 is 1+3. Sum 16 is 7+9, and 17 is 8+9. Those are free squares — fill them in first and the rest of the grid opens up around them."},
       {t:"lead", lead:"Use the rule of 45. ", s:"Every row, every column and every 3×3 box sums to 45. If the cages covering a box total 43 with a single cell poking out beyond it, that overflow is the value of the cell. Innies and outies win more killer puzzles than raw arithmetic does."},
-      {t:"lead", lead:"Pencil marks are not cheating. ", s:"Every puzzle in this book has a blank strip beneath it for working. Use it. Writing down the candidates for a cage is how you find the pair that solves it."},
+      {t:"lead", lead:"Pencil marks are not cheating. ", s:"Every puzzle in this book has a blank strip beneath it for working. Use it. Writing down the candidates for a cage is how you find the pair that solves it, and crossing a digit out of a row, column, box and cage as you place it keeps the grid honest."},
       {t:"h2", s:"About the puzzles"},
-      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution. There are no broken puzzles here and no ambiguous endings. If you are stuck, you are stuck on something that is genuinely there."},
-      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution. There are no broken puzzles here and no ambiguous endings. If you are stuck, you are stuck on something that is genuinely there."}
+    ],
+    [
+      {t:"h2", s:"Where 1.7 million puzzles come from"},
+      {t:"p",  s:"Every puzzle has a number, and that number is all it takes to deal it: the same number always produces the same puzzle, on any device, this year or in ten years. As a puzzle is dealt, a solver checks it has exactly one solution before anybody sees it."},
+      {t:"p",  s:"The same engine deals every game at zaneysudoku.com — killer all the way up to Nightmare, classic including Coward’s, Sudoku X and Hyper — which comes to more than 1.7 million puzzles, all free, all verified the same way, plus four daily challenges."},
+      {t:"h2", s:"Go deeper"},
+      {t:"p",  s:"Three guides live alongside the game and cost nothing to read: a complete beginner’s guide to killer sudoku, a cage combinations cheat sheet giving every sum for every cage size with the forced combinations marked, and a strategy guide on the rule of 45, innies and outies."},
+      {t:"p",  s:"All three are at zaneysudoku.com, along with the solutions archive."},
+      {t:"p",  s:"Solutions to this book begin on page {{SOLUTIONS_PAGE}}. They will keep."}
     ]
   ],
   classic: [
@@ -736,8 +818,15 @@ const KDP_HOWTO = {
       {t:"lead", lead:"Hidden singles beat naked ones. ", s:"A cell with only one candidate left is easy to spot. A digit with only one possible cell left in a row is harder to spot and appears far more often. Look for the second kind."},
       {t:"lead", lead:"Pencil marks are not cheating. ", s:"Every puzzle in this book has a blank strip beneath it for working. When scanning stops producing placements, write the candidates down — pairs and triples only become visible once they are on the page."},
       {t:"h2", s:"About the puzzles"},
-      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution. There are no broken puzzles here and no ambiguous endings."},
-      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution. There are no broken puzzles here and no ambiguous endings."}
+    ],
+    [
+      {t:"h2", s:"Where 1.7 million puzzles come from"},
+      {t:"p",  s:"Every puzzle has a number, and that number is all it takes to deal it: the same number always produces the same puzzle, on any device, this year or in ten years. As a puzzle is dealt, a solver checks it has exactly one solution before anybody sees it."},
+      {t:"p",  s:"The same engine deals every game at zaneysudoku.com — classic including Coward’s, killer all the way up to Nightmare, Sudoku X and Hyper — which comes to more than 1.7 million puzzles, all free, all verified the same way, plus four daily challenges."},
+      {t:"h2", s:"Go deeper"},
+      {t:"p",  s:"Guides, a solutions archive and four daily challenges are free at zaneysudoku.com, along with a cage combinations cheat sheet and a strategy guide if you ever fancy trying killer sudoku."},
+      {t:"p",  s:"Solutions to this book begin on page {{SOLUTIONS_PAGE}}. They will keep."}
     ]
   ],
   x: [
@@ -753,10 +842,17 @@ const KDP_HOWTO = {
       {t:"h2", s:"Three things worth knowing"},
       {t:"lead", lead:"Start at the centre. ", s:"The middle cell sits on both diagonals at once, so it is constrained by four regions rather than three. It is almost always the most productive cell on the grid."},
       {t:"lead", lead:"The diagonals cut through the corners. ", s:"Each corner box holds three diagonal cells. That makes the four corner boxes far more constrained than they look, and they are usually where a stuck grid breaks open."},
-      {t:"lead", lead:"Treat a diagonal as a row. ", s:"Everything you know about scanning a row applies to it — hidden singles, pairs, the lot. The only difference is that it crosses five boxes instead of three."},
+      {t:"lead", lead:"Treat a diagonal as a row. ", s:"Everything you know about scanning a row applies to it — hidden singles, pairs, the lot. The only difference is that it crosses five boxes instead of three. Use the blank strip under each puzzle for candidates."},
       {t:"h2", s:"About the puzzles"},
-      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution, using the diagonal constraint. There are no broken puzzles here."},
-      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution, using the diagonal constraint. There are no broken puzzles here."}
+    ],
+    [
+      {t:"h2", s:"Where 1.7 million puzzles come from"},
+      {t:"p",  s:"Every puzzle has a number, and that number is all it takes to deal it: the same number always produces the same puzzle, on any device, this year or in ten years. As a puzzle is dealt, a solver checks it has exactly one solution before anybody sees it."},
+      {t:"p",  s:"The same engine deals every game at zaneysudoku.com — Sudoku X, Hyper, classic including Coward’s, and killer all the way up to Nightmare — which comes to more than 1.7 million puzzles, all free, all verified the same way, plus four daily challenges."},
+      {t:"h2", s:"Go deeper"},
+      {t:"p",  s:"Guides, a solutions archive and four daily challenges are free at zaneysudoku.com, including a full beginner’s guide and a strategy guide."},
+      {t:"p",  s:"Solutions to this book begin on page {{SOLUTIONS_PAGE}}. They will keep."}
     ]
   ],
   hyper: [
@@ -772,10 +868,17 @@ const KDP_HOWTO = {
       {t:"h2", s:"Three things worth knowing"},
       {t:"lead", lead:"Work the overlaps. ", s:"A cell inside a shaded window answers to four regions at once — row, column, box and window. Those cells fall first, and they take the rest of the window with them."},
       {t:"lead", lead:"Mind the gaps. ", s:"The row and column between the windows belong to no window at all. They are the least constrained lines on the grid and are usually the last to fill."},
-      {t:"lead", lead:"A window is just another box. ", s:"Scan it the same way: pick a digit, find the cells it cannot occupy, see what is left. Thirteen regions means thirteen chances to find a hidden single."},
+      {t:"lead", lead:"A window is just another box. ", s:"Scan it the same way: pick a digit, find the cells it cannot occupy, see what is left. Thirteen regions means thirteen chances to find a hidden single. Use the blank strip under each puzzle for candidates."},
       {t:"h2", s:"About the puzzles"},
-      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution, using the window constraint. There are no broken puzzles here."},
-      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution, using the window constraint. There are no broken puzzles here."}
+    ],
+    [
+      {t:"h2", s:"Where 1.7 million puzzles come from"},
+      {t:"p",  s:"Every puzzle has a number, and that number is all it takes to deal it: the same number always produces the same puzzle, on any device, this year or in ten years. As a puzzle is dealt, a solver checks it has exactly one solution before anybody sees it."},
+      {t:"p",  s:"The same engine deals every game at zaneysudoku.com — Hyper, Sudoku X, classic including Coward’s, and killer all the way up to Nightmare — which comes to more than 1.7 million puzzles, all free, all verified the same way, plus four daily challenges."},
+      {t:"h2", s:"Go deeper"},
+      {t:"p",  s:"Guides, a solutions archive and four daily challenges are free at zaneysudoku.com, including a full beginner’s guide and a strategy guide."},
+      {t:"p",  s:"Solutions to this book begin on page {{SOLUTIONS_PAGE}}. They will keep."}
     ]
   ]
 };
@@ -850,10 +953,22 @@ function kdpDefaultFront(mode, diff, opts){
   const year = opts.year || 2026;
   const modeName = KDP_MODE_NAME[mode] || "Sudoku";
   const label = (typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[diff]) || diff;
+  /* The half title is three lines, always, in this order: the company, the
+     book, then the volume. They are separate fields because they are set in
+     different type and because "Zaney Sudoku Killer Sudoku Vol 1" on one line
+     is not a title page. `title` is the composed form, for the copyright page,
+     the PDF metadata and the series list — the imprint is the publisher, so it
+     is deliberately not part of it. */
+  const imprint  = opts.imprint  || "Zaney Sudoku";
+  const bookName = opts.bookName || modeName;
+  /* Every book gets a volume line by default: the half title is a three-line
+     shape, and a missing volume would collapse it back to two. */
+  const volume   = opts.volume === undefined ? "Vol 1" : (opts.volume || "");
   return {
-    title:    opts.title || (modeName+": "+label),
+    bookName, volume,
+    title:    opts.title || [bookName, volume].filter(Boolean).join(" "),
     subtitle: opts.subtitle || (opts.puzzleCount ? opts.puzzleCount+" puzzles, every one verified" : ""),
-    imprint:  opts.imprint || "Zaney Sudoku",
+    imprint,
     author:   opts.author  || "zaney.dev",
     isbn:     opts.isbn    || "",
     site:     opts.site    || "zaneysudoku.com",
@@ -903,11 +1018,16 @@ function kdpCtx(doc, trace){
       const size = this.doc.getFontSize();
       const w = this.doc.getTextWidth(str);
       const tx = o.align==="center" ? x-w/2 : o.align==="right" ? x-w : x;
-      const ty = o.baseline==="middle" ? y-size*0.5
+      /* Callers that know their string is all digits pass the measured ink
+         extents. Everything else falls back to the em box, which is generous
+         but never lets a real collision through. */
+      const ink = o.ink;
+      const ty = ink ? y - size*ink.up
+               : o.baseline==="middle" ? y-size*0.5
                : o.baseline==="top"    ? y
                : o.baseline==="bottom" ? y-size
                : y - size*0.78;
-      this._m(tx, ty, w, size*1.02, false, "text");
+      this._m(tx, ty, w, ink ? size*(ink.up+ink.down) : size*1.02, false, "text");
     }
   };
 }
@@ -993,6 +1113,40 @@ function kdpFlow(ctx, blocks, box, startY, align){
 /* ---------------------------------------------------------------------------
    Page rendering
 --------------------------------------------------------------------------- */
+/* Letterspacing, for the imprint line on the half title. jsPDF has charSpace
+   but it is not honoured consistently across its text paths, so the tracking is
+   done here and every glyph goes through ctx.text like everything else. */
+function kdpTracked(ctx, str, cx, y, track){
+  const doc = ctx.doc;
+  let total = 0;
+  for(let i=0;i<str.length;i++) total += doc.getTextWidth(str[i]) + (i<str.length-1 ? track : 0);
+  let x = cx - total/2;
+  for(let i=0;i<str.length;i++){
+    if(str[i] !== " ") ctx.text(str[i], x, y, {});
+    x += doc.getTextWidth(str[i]) + track;
+  }
+}
+
+/* The QR as vector rectangles: maximal horizontal runs of dark modules, each a
+   filled black box. No image, no resolution, no halftone — the printer gets a
+   hard-edged path, which is what makes a small code scan reliably off paper.
+   Runs are drawn a whisker tall so adjacent rows cannot show a seam. */
+function kdpDrawQR(ctx, x, y, size){
+  const n = KDP_QR.length, m = size/n;
+  ctx.doc.setFillColor(0,0,0);
+  for(let r=0;r<n;r++){
+    const row = KDP_QR[r];
+    let c = 0;
+    while(c < n){
+      if(row[c] !== "1"){ c++; continue; }
+      let k = c;
+      while(k < n && row[k] === "1") k++;
+      ctx.rect(x + c*m, y + r*m, (k-c)*m, m*1.02, "F");
+      c = k;
+    }
+  }
+}
+
 function kdpFolio(ctx, box, n){
   const doc = ctx.doc;
   doc.setFont(KDP_FONT_FAMILY, "normal");
@@ -1091,9 +1245,19 @@ function kdpRenderPage(ctx, plan, cfg, pg, index){
   let res = {ok:true};
 
   if(pg.kind === "halftitle"){
+    /* Company, then book, then volume — one line each, in that order, for
+       every book. The imprint is set small and letterspaced above the title so
+       it reads as the publisher rather than as the first word of it. */
     doc.setTextColor(0,0,0);
-    let y = box.y + box.h*0.30;
-    const t = kdpBreakRuns(doc, [{s:F.title, font:"bold"}], box.w, 21);
+    let y = box.y + box.h*0.28;
+    if(F.imprint){
+      doc.setFont(KDP_FONT_FAMILY,"bold"); doc.setFontSize(10);
+      doc.setTextColor(105,105,105);
+      kdpTracked(ctx, F.imprint.toUpperCase(), box.x + box.w/2, y, 1.5);
+      doc.setTextColor(0,0,0);
+      y += 10*2.4;
+    }
+    const t = kdpBreakRuns(doc, [{s:F.bookName || F.title, font:"bold"}], box.w, 21);
     for(const line of t){
       let tw = 0; doc.setFont(KDP_FONT_FAMILY,"bold"); doc.setFontSize(21);
       for(const w of line) tw += w.w + (w.space ? doc.getTextWidth(" ") : 0);
@@ -1101,12 +1265,47 @@ function kdpRenderPage(ctx, plan, cfg, pg, index){
       for(const w of line){ if(w.space) x += doc.getTextWidth(" "); ctx.text(w.s, x, y, {}); x += w.w; }
       y += 21*1.22;
     }
+    if(F.volume){
+      y += 6;
+      doc.setFont(KDP_FONT_FAMILY,"normal"); doc.setFontSize(13);
+      ctx.text(F.volume, box.x + box.w/2, y, {align:"center"});
+      y += 13*1.22;
+    }
     if(F.subtitle){
       y += 10;
       doc.setFont(KDP_FONT_FAMILY,"normal"); doc.setFontSize(10); doc.setTextColor(90,90,90);
       ctx.text(F.subtitle, box.x + box.w/2, y, {align:"center"});
       doc.setTextColor(0,0,0);
     }
+  }
+
+  else if(pg.kind === "playmore" || pg.kind === "backpage"){
+    const back = pg.kind === "backpage";
+    let y = box.y + box.h*(back ? 0.16 : 0.14);
+    doc.setFont(KDP_FONT_FAMILY,"bold"); doc.setFontSize(17); doc.setTextColor(0,0,0);
+    ctx.text(back ? "Keep playing, free" : "1.7 million more puzzles, free",
+             box.x + box.w/2, y, {align:"center"});
+    y += 17*1.24 + 10;
+
+    const intro = back
+      ? "Thank you for playing. Every puzzle in this book came from the same engine that runs the site, where the whole archive is free and there is a fresh daily challenge waiting."
+      : "Scan the code, or type the address underneath it. Killer, classic, Sudoku X and Hyper, four daily challenges, a solutions archive and the guides — no charge, no account needed.";
+    y = kdpFlow(ctx, [{t:"p", s:intro}], box, y, "center");
+
+    const qr = Math.min(box.w*0.52, 150);
+    y += 12;
+    kdpDrawQR(ctx, box.x + (box.w - qr)/2, y, qr);
+    y += qr + 20;
+
+    doc.setFont(KDP_FONT_FAMILY,"bold"); doc.setFontSize(13); doc.setTextColor(0,0,0);
+    ctx.text(F.site, box.x + box.w/2, y, {align:"center"});
+    y += 13*1.24 + 12;
+
+    const tail = back
+      ? [{t:"p", s:"If this book was good company, a short review helps another solver find it — and tells us which volume to print next."},
+         {t:"p", s:"More volumes in this series are listed on the previous page."}]
+      : [{t:"p", s:"Every puzzle on the site carries a number, and that number always deals the same puzzle. The ones in this book are printed with their numbers for the same reason."}];
+    kdpFlow(ctx, tail, box, y, "center");
   }
 
   else if(pg.kind === "copyright"){
@@ -1167,7 +1366,15 @@ function kdpRenderPage(ctx, plan, cfg, pg, index){
    embedded subset before anything is composed. */
 function kdpCollectText(cfg){
   const out = [cfg.front.title, cfg.front.subtitle, cfg.front.author,
-               cfg.front.imprint, cfg.front.isbn, cfg.front.site, cfg.runningHead];
+               cfg.front.imprint, (cfg.front.imprint||"").toUpperCase(),
+               cfg.front.bookName, cfg.front.volume,
+               cfg.front.isbn, cfg.front.site, cfg.runningHead,
+               "1.7 million more puzzles, free", "Keep playing, free",
+               "Scan the code, or type the address underneath it. Killer, classic, Sudoku X and Hyper, four daily challenges, a solutions archive and the guides — no charge, no account needed.",
+               "Thank you for playing. Every puzzle in this book came from the same engine that runs the site, where the whole archive is free and there is a fresh daily challenge waiting.",
+               "Every puzzle on the site carries a number, and that number always deals the same puzzle. The ones in this book are printed with their numbers for the same reason.",
+               "If this book was good company, a short review helps another solver find it — and tells us which volume to print next.",
+               "More volumes in this series are listed on the previous page."];
   for(const line of cfg.front.copyright||[]) out.push(line);
   const blocks = [].concat.apply([], (cfg.front.howto||[])).concat(cfg.front.about||[]);
   for(const b of blocks){ if(b.s) out.push(b.s); if(b.lead) out.push(b.lead); }
@@ -1296,7 +1503,8 @@ function kdpSeriesList(books, bookId){
   for(const k in books){
     if(!Object.prototype.hasOwnProperty.call(books,k) || k === bookId) continue;
     const o = books[k], p = KDP_PRESETS[kdpResolvePreset(o.preset)];
-    out.push(o.title + (o.altEditionOf && p ? " — " + p.name : "") +
+    const name = [o.title, o.volume].filter(Boolean).join(" ");
+    out.push(name + (o.altEditionOf && p ? " — " + p.name : "") +
              (o.puzzleCount ? " · " + o.puzzleCount + " puzzles" : ""));
   }
   return out.sort();
@@ -1537,6 +1745,14 @@ function kdpMakeDoc(jsPDFctor, plan){
 /* Returns a driver the caller steps through, so the browser can chunk it
    between frames and Node can just run it to completion. */
 function kdpAssembler(jsPDFctor, fonts, plan, cfg, pageLimit){
+  /* The plan reserved KDP_FRONT.howtoPages pages before it knew which mode this
+     is. If the copy for this mode is a different length, one page would silently
+     print blank or one section would silently vanish. */
+  const howtoPages = plan.pages.filter(function(g){ return g.kind === "howto"; }).length;
+  if((cfg.front.howto || []).length !== howtoPages)
+    throw new Error("EXPORT ABORTED — the plan reserved "+howtoPages+" how-to-play page(s) "+
+      "but the copy for mode '"+cfg.mode+"' is "+(cfg.front.howto||[]).length+" page(s). "+
+      "KDP_FRONT.howtoPages and KDP_HOWTO must agree.");
   const missing = kdpUnsupportedChars(cfg, fonts.charset);
   if(missing.length)
     throw new Error("EXPORT ABORTED — the embedded font cannot render "+

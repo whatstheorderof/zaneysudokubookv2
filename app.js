@@ -128,6 +128,7 @@ function selectBook(id) {
   SELECTED = id;
   const b = LIB[id];
   $("#xTitle").value = b.title;
+  $("#xVolume").value = b.volume || "";
   $("#xSub").value = b.puzzleCount + " puzzles, every one verified";
   refresh();
 }
@@ -193,7 +194,8 @@ function downloadCover() {
     const plan = kdpPlan(b.preset, b.puzzleCount);
     const spec = kdpCoverSpec(plan, paperChoice());
     const out = kdpBuildCoverTemplate(window.jspdf.jsPDF, window.KDP_FONTS, spec,
-      { title: $("#xTitle").value.trim() || b.title, bookId: SELECTED });
+      { title: [$("#xTitle").value.trim() || b.title, $("#xVolume").value.trim()].filter(Boolean).join(" "),
+        bookId: SELECTED });
     const name = "zaney-" + SELECTED + "-cover-" + spec.fullIn[0].toFixed(3) + "x" +
       spec.fullIn[1].toFixed(3) + "in.pdf";
     const a = document.createElement("a");
@@ -376,6 +378,7 @@ function openEditor(id) {
   $("#fTrim").value = preset.trimId;
   $("#fLayout").value = preset.layoutId;
   $("#fTitle").value = b ? b.title : "";
+  $("#fVolume").value = b ? (b.volume || "") : "Vol 1";
 
   const startBands = b ? kdpBands(b) : [{ difficulty: "hard", count: preset.defaultPuzzles }];
   const startCount = kdpBandTotal(startBands);
@@ -401,9 +404,10 @@ function saveBook() {
   const count = kdpBandTotal(bands);
   const seedStart = parseInt($("#fSeed").value, 10);
   const title = $("#fTitle").value.trim();
+  const volume = $("#fVolume").value.trim();
   const alt = $("#fAlt").value || null;
 
-  if (!title) return fail("Give the book a title.");
+  if (!title) return fail("Give the book a name — the middle line of the title page.");
   if (!(count > 0)) return fail("The book needs at least one puzzle.");
   for (const b of bands) if (!(b.count > 0)) return fail("Every difficulty level needs at least one puzzle.");
   if (!(seedStart > 0)) return fail("Seed start must be a positive number.");
@@ -415,6 +419,7 @@ function saveBook() {
   const prev = LIB[id];
   const entry = {
     title: title,
+    volume: volume,
     mode: $("#fMode").value,
     difficulty: bands[0].difficulty,
     preset: currentPresetId(),
@@ -461,8 +466,9 @@ function renderReadout(plan, book) {
   const row = function (k, v) { h += "<tr><th>" + k + "</th><td>" + v + "</td></tr>"; };
   row("Size", "<b>" + P.trimIn[0] + " × " + P.trimIn[1] + " in</b> · " + esc(P.name) + " · " + plan.category + " trim");
   row("Puzzles", plan.puzzleCount + " · " + esc(bandSummary(book)) + " · " + P.puzzlesPerPage + " a page");
-  row("Pages", "<b>" + plan.total + "</b> <span class='dim'>(6 front + " + plan.puzzlePages +
-    " puzzle + divider + " + plan.solutionPages + " solutions + back matter)</span>");
+  row("Pages", "<b>" + plan.total + "</b> <span class='dim'>(" + (plan.puzzleStart - 1) +
+    " front + " + plan.puzzlePages + " puzzle + divider + " + plan.solutionPages +
+    " solutions + back matter)</span>");
   row("Gutter", plan.gutterIn + " in <span class='dim'>(" + plan.gutterTier.min + "–" + plan.gutterTier.max + " pp tier)</span>");
   row("Spine", pr.spineIn.toFixed(4) + " in / " + pr.spineCm.toFixed(2) + " cm");
   row("Cover wrap", "<b>" + pr.cover.w.toFixed(3) + " × " + pr.cover.h.toFixed(3) + " in</b> <span class='dim'>— for Canva</span>");
@@ -657,7 +663,8 @@ function doExport() {
                diffLabel: label, runHead: modeName + " · " + label };
     });
     const front = kdpDefaultFront(book.mode, book.difficulty, {
-      title: $("#xTitle").value.trim() || book.title,
+      bookName: $("#xTitle").value.trim() || book.title,
+      volume: $("#xVolume").value.trim(),
       subtitle: $("#xSub").value.trim(),
       author: $("#xAuthor").value.trim() || undefined,
       isbn: $("#xIsbn").value.trim(),

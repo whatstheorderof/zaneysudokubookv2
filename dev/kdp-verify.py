@@ -54,8 +54,11 @@ def verify(outdir, book_id, render=True):
         check("divider page carries no folio", not plan["folios"][div[0] - 1])
     check("no blank page carries a folio",
           all(not plan["folios"][i] for i, k in enumerate(kinds) if k == "blank"))
-    check("front matter is unnumbered", not any(plan["folios"][:6]))
-    check("numbering starts at page 7", plan["folios"][6] is True)
+    start = plan["puzzleStart"]
+    check("front matter is unnumbered", not any(plan["folios"][:start - 1]),
+          "%d unnumbered pages before the first puzzle" % (start - 1))
+    check("numbering starts at page %d" % start, plan["folios"][start - 1] is True)
+    check("puzzles open on a recto", start % 2 == 1, "page %d" % start)
 
     # ---- 3. MediaBox exactly the trim, and no crop/trim/bleed boxes ---------
     tw, th = plan["trimPt"]
@@ -177,6 +180,31 @@ def verify(outdir, book_id, render=True):
                % (len(collisions), collisions[0][0], collisions[0][1], collisions[0][2],
                   collisions[0][3], collisions[0][4]))
 
+    # Not touching is the floor, not the goal: on a puzzle page a cage sum and
+    # the given beneath it have to be visibly apart in print. This measures the
+    # narrowest vertical gap between any two pieces of type whose columns
+    # overlap, and fails if the tightest one in the book is under half a point.
+    MIN_GAP = 0.5
+    puzzle_pages = set(i + 1 for i, k in enumerate(kinds) if k == "puzzles")
+    tightest, where = None, None
+    for pg, marks in by_page.items():
+        if pg not in puzzle_pages:
+            continue
+        for i, a in enumerate(marks):
+            ax1 = a["x"] + a["w"]
+            for b in marks[i + 1:]:
+                if b["x"] >= ax1:
+                    break
+                gap = b["y"] - (a["y"] + a["h"]) if b["y"] > a["y"] else a["y"] - (b["y"] + b["h"])
+                if tightest is None or gap < tightest:
+                    tightest, where = gap, pg
+    if tightest is None:
+        print("  NOTE  no puzzle pages in range, so no clearance to measure")
+    else:
+        check("cage sums clear the digits beneath them", tightest >= MIN_GAP,
+              "tightest gap in the book is %.2fpt (page %d), floor %.2fpt"
+              % (tightest, where, MIN_GAP))
+
     # the mirroring itself: each side's content must sit against ITS OWN limits
     body = [m for m in meta["marks"] if m["page"] >= 7]
     odd_x0 = min((m["x"] for m in body if m["page"] % 2 == 1), default=None)
@@ -214,6 +242,32 @@ def verify(outdir, book_id, render=True):
                             "-png", "-singlefile", pdf_path, stem], check=True)
             made.append(stem + ".png")
         check("rendered proof pages %s" % wanted, all(os.path.exists(p) for p in made))
+
+        # The QR is drawn as vector rectangles, so nothing guarantees it decodes
+        # except decoding it. Rendered at 300dpi — roughly what a phone camera
+        # sees of a printed page — and read back off the front page and the last.
+        qr_pages = [i + 1 for i, k in enumerate(kinds) if k in ("playmore", "backpage")]
+        if qr_pages:
+            try:
+                import cv2
+            except ImportError:
+                print("  NOTE  opencv not installed, so the QR was not decoded "
+                      "(pip install opencv-python-headless)")
+            else:
+                want = "https://zaneysudoku.com/"
+                got = []
+                for pg in qr_pages:
+                    stem = os.path.join(outdir, "%s-qr%03d" % (book_id, pg))
+                    subprocess.run(["pdftoppm", "-f", str(pg), "-l", str(pg), "-r", "300",
+                                    "-png", "-singlefile", pdf_path, stem], check=True)
+                    img = cv2.imread(stem + ".png", cv2.IMREAD_GRAYSCALE)
+                    val, _, _ = cv2.QRCodeDetector().detectAndDecode(img)
+                    got.append((pg, val))
+                check("the QR code scans, on every page that carries one",
+                      all(v == want for _, v in got),
+                      "pages %s all decode to %s" % ([g[0] for g in got], want)
+                      if all(v == want for _, v in got)
+                      else "got %s" % got)
 
     return meta
 

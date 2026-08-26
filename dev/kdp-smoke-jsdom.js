@@ -157,6 +157,8 @@ function run() {
       $("#fTrim").options.length === G("KDP_TRIMS").length &&
       $("#fLayout").options.length === G("KDP_LAYOUTS").length,
       $("#fTrim").options.length + " sizes, " + $("#fLayout").options.length + " layouts");
+    check("the volume line is filled in for a new book, so the title page is three deep",
+      $("#fVolume").value === "Vol 1", "company / book name / " + $("#fVolume").value);
     check("the editor previews pages and cost before saving",
       /pages/.test($("#editPreview").textContent) && /print/.test($("#editPreview").textContent),
       $("#editPreview").textContent.trim().slice(0, 80));
@@ -164,10 +166,10 @@ function run() {
     /* ---- target length drives the puzzle count ------------------------- */
     check("a new book is fitted to a page count by default", $("#fTargetMode").value === "pages",
       "target " + $("#fTarget").value + " pages");
-    $("#fTarget").value = "402";
+    $("#fTarget").value = "404";
     $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
-    check("asking for 402 pages works back to 336 puzzles",
-      /336 puzzles/.test($("#fFit").textContent) && /402 pages/.test($("#fFit").textContent),
+    check("asking for 404 pages works back to 336 puzzles",
+      /336 puzzles/.test($("#fFit").textContent) && /404 pages/.test($("#fFit").textContent),
       $("#fFit").textContent.trim());
     $("#fTarget").value = "110";
     $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
@@ -176,8 +178,8 @@ function run() {
       $("#fFit").textContent.trim());
     $("#fTrim").value = "8.5x11"; $("#fLayout").value = "2up";
     $("#fLayout").dispatchEvent(new win.Event("change", { bubbles: true }));
-    check("the flat-fee ceiling of 110 pages gives 160 puzzles at 8.5x11 two-up",
-      /160 puzzles/.test($("#fFit").textContent), $("#fFit").textContent.trim());
+    check("the flat-fee ceiling of 110 pages gives 156 puzzles at 8.5x11 two-up",
+      /156 puzzles/.test($("#fFit").textContent), $("#fFit").textContent.trim());
     $("#fTrim").value = "5.06x7.81"; $("#fLayout").value = "1up";
     $("#fLayout").dispatchEvent(new win.Event("change", { bubbles: true }));
 

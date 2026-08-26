@@ -9,7 +9,8 @@
     "puzzleCount": 160,
     "pageCount": 110,
     "published": null,
-    "asin": null
+    "asin": null,
+    "volume": "Vol 1"
   },
   "ZS-002": {
     "title": "Sudoku X: Hard",
@@ -21,7 +22,8 @@
     "puzzleCount": 160,
     "pageCount": 110,
     "published": null,
-    "asin": null
+    "asin": null,
+    "volume": "Vol 1"
   },
   "ZS-003": {
     "title": "Killer Sudoku: Easy to Hard",
@@ -47,10 +49,11 @@
         "difficulty": "hard",
         "count": 112
       }
-    ]
+    ],
+    "volume": "Vol 1"
   },
   "ZS-004": {
-    "title": "Classic Sudoku: Medium \u2014 Large Print",
+    "title": "Classic Sudoku: Medium — Large Print",
     "mode": "classic",
     "difficulty": "medium",
     "preset": "8.5x11/1up",
@@ -60,6 +63,7 @@
     "puzzleCount": 160,
     "pageCount": 198,
     "published": null,
-    "asin": null
+    "asin": null,
+    "volume": "Vol 1"
   }
 }
