@@ -65,5 +65,40 @@
     "published": null,
     "asin": null,
     "volume": "Vol 1"
+  },
+  "ZS-005": {
+    "title": "Sudoku Variety",
+    "volume": "Vol 1",
+    "mode": "classic",
+    "difficulty": "medium",
+    "preset": "8.5x11/2up",
+    "seedStart": 51000,
+    "seedEnd": 51119,
+    "puzzleCount": 120,
+    "bands": [
+      {
+        "mode": "classic",
+        "difficulty": "medium",
+        "count": 30
+      },
+      {
+        "mode": "killer",
+        "difficulty": "easy",
+        "count": 30
+      },
+      {
+        "mode": "x",
+        "difficulty": "medium",
+        "count": 30
+      },
+      {
+        "mode": "hyper",
+        "difficulty": "medium",
+        "count": 30
+      }
+    ],
+    "pageCount": 0,
+    "published": null,
+    "asin": null
   }
 }

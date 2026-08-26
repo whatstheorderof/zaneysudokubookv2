@@ -128,7 +128,7 @@ const KDP_GUTTER_TIERS = [
    data change — the plan pads around whatever this says. */
 const KDP_FRONT = {
   contents: true,  /* the contents page, built from the plan itself     */
-  howtoPages: 2,   /* must equal KDP_HOWTO[mode].length for every mode  */
+  howtoPagesPerMode: 2,   /* must equal KDP_HOWTO[mode].length for every mode */
   playMore: true,  /* the QR page in the front matter                   */
   backPage: true   /* the QR page as the final leaf, instead of a blank  */
 };
@@ -218,9 +218,43 @@ function kdpLiveArea(preset, pageNo, gutterIn){
    different difficulty is a different puzzle, and a band split is therefore
    part of a book's identity as much as its range is.
 --------------------------------------------------------------------------- */
+/* A band is a run of consecutive puzzles at one level of one variation. Its
+   type is optional and falls back to the book's, so every book written before
+   variety books existed still reads correctly. */
 function kdpBands(book){
-  if(book.bands && book.bands.length) return book.bands;
-  return [{difficulty: book.difficulty, count: book.puzzleCount}];
+  const fallback = book.mode;
+  if(book.bands && book.bands.length)
+    return book.bands.map(function(b){
+      return {mode: b.mode || fallback, difficulty: b.difficulty, count: b.count};
+    });
+  return [{mode: fallback, difficulty: book.difficulty, count: book.puzzleCount}];
+}
+
+/* The distinct variations in a book, in the order they first appear. That
+   order decides the order of the rules sections, so it is the reading order,
+   not an alphabetical one. */
+function kdpBookModes(bands, fallback){
+  const out = [];
+  for(const b of (bands||[])){
+    const m = b.mode || fallback;
+    if(m && out.indexOf(m) < 0) out.push(m);
+  }
+  if(!out.length && fallback) out.push(fallback);
+  return out;
+}
+
+/* One set of rules per variation present, in reading order. A book with killer
+   and Sudoku X in it prints both, because a reader who bought it for the
+   variety needs both. */
+function kdpHowtoFor(modes){
+  const list = (modes && modes.length) ? modes : ["classic"];
+  let out = [];
+  for(const m of list) out = out.concat(KDP_HOWTO[m] || KDP_HOWTO.classic);
+  return out;
+}
+function kdpHowtoPages(modes){
+  const n = (modes && modes.length) ? modes.length : 1;
+  return n * KDP_FRONT.howtoPagesPerMode;
 }
 
 function kdpBandTotal(bands){
@@ -230,9 +264,12 @@ function kdpBandTotal(bands){
 }
 
 /* The difficulty of every puzzle in order, so dealing and labelling agree. */
-function kdpBandSequence(bands){
+/* One entry per puzzle: which variation to deal and at what level. */
+function kdpBandSequence(bands, fallbackMode){
   const out = [];
-  for(const b of bands) for(let i=0;i<b.count;i++) out.push(b.difficulty);
+  for(const b of bands)
+    for(let i=0;i<b.count;i++)
+      out.push({mode: b.mode || fallbackMode, difficulty: b.difficulty});
   return out;
 }
 
@@ -242,7 +279,7 @@ function kdpBandRanges(bands){
   let n = 1;
   for(const b of bands){
     if(b.count <= 0) continue;
-    out.push({difficulty: b.difficulty, from: n, to: n + b.count - 1, count: b.count});
+    out.push({mode: b.mode, difficulty: b.difficulty, from: n, to: n + b.count - 1, count: b.count});
     n += b.count;
   }
   return out;
@@ -259,7 +296,8 @@ function kdpValidDifficulties(mode){
 /* ---------------------------------------------------------------------------
    Pagination. Runs to completion before anything is laid out or dealt.
 --------------------------------------------------------------------------- */
-function kdpPlan(presetId, puzzleCount){
+function kdpPlan(presetId, puzzleCount, opts){
+  opts = opts || {};
   presetId = kdpResolvePreset(presetId);
   const P = KDP_PRESETS[presetId];
   if(!P) throw new Error("Unknown preset "+presetId);
@@ -270,7 +308,10 @@ function kdpPlan(presetId, puzzleCount){
 
   push("halftitle"); push("copyright");
   if(KDP_FRONT.contents) push("contents");
-  for(let i=1;i<=KDP_FRONT.howtoPages;i++) push("howto", {part:i});
+  /* One rules section per variation in the book, so the page count follows the
+     book rather than a constant. */
+  const howtoPages = kdpHowtoPages(opts.modes);
+  for(let i=1;i<=howtoPages;i++) push("howto", {part:i});
   push("about");
   if(KDP_FRONT.playMore) push("playmore");
   /* Puzzles open on a recto, so the front matter is padded to an even length
@@ -322,7 +363,7 @@ function kdpPlan(presetId, puzzleCount){
   const tier = kdpGutterIn(total);
 
   return {
-    presetId, preset:P, puzzleCount, pages, total,
+    presetId, preset:P, puzzleCount, pages, total, howtoPages, modes: (opts.modes||null),
     puzzlePages: puzPages, solutionPages: solPages,
     puzzleStart, dividerPage, solutionStart: solStart,
     recotFiller: filler, evenPad: pad,
@@ -445,14 +486,22 @@ function kdpPricing(plan, paper){
    count falls out of that. Page count rises monotonically with puzzle count, so
    this walks to the largest count that still fits.
 --------------------------------------------------------------------------- */
-function kdpPuzzlesForPages(presetId, targetPages){
+/* The plan for a book in the library. Everything that needs a page count goes
+   through here so the rules sections a book carries are never forgotten. */
+function kdpPlanFor(book, puzzleCount){
+  const bands = kdpBands(book);
+  return kdpPlan(book.preset, puzzleCount || book.puzzleCount,
+                 {modes: kdpBookModes(bands, book.mode)});
+}
+
+function kdpPuzzlesForPages(presetId, targetPages, opts){
   presetId = kdpResolvePreset(presetId);
   const P = KDP_PRESETS[presetId];
   if(!P) throw new Error("Unknown preset "+presetId);
 
   const perPuzzle = 1/P.puzzlesPerPage + 1/P.solsPerPage;   /* pages each puzzle adds */
   let n = Math.max(1, Math.round((targetPages - 11) / perPuzzle));
-  const planOf = function(k){ try { return kdpPlan(presetId, k); } catch(e){ return null; } };
+  const planOf = function(k){ try { return kdpPlan(presetId, k, opts); } catch(e){ return null; } };
 
   /* walk up while we still fit, then back off to the last that did */
   let guard = 0;
@@ -481,15 +530,19 @@ function kdpPuzzlesForPages(presetId, targetPages){
 
 /* Spread a total across levels as evenly as it goes, remainder to the earlier
    bands so the book eases in rather than ending on an odd short stretch. */
-function kdpSplitBands(total, difficulties){
-  const k = difficulties.length;
+/* Spread a total across a list of bands. Each entry is either a difficulty
+   name or a {mode, difficulty} pair, so this splits a climb and a variety book
+   the same way. */
+function kdpSplitBands(total, specs){
+  const k = specs.length;
   if(k === 0) return [];
   const base = Math.floor(total / k);
   let rem = total - base*k;
-  return difficulties.map(function(d){
+  return specs.map(function(d){
     const extra = rem > 0 ? 1 : 0;
     if(rem > 0) rem--;
-    return { difficulty: d, count: base + extra };
+    const spec = (typeof d === "string") ? {difficulty: d} : d;
+    return { mode: spec.mode, difficulty: spec.difficulty, count: base + extra };
   });
 }
 
@@ -863,7 +916,8 @@ const KDP_GUIDES = {
   killer:  "Three guides live alongside the game and cost nothing to read: a complete beginner\u2019s guide to killer sudoku, a cage combinations cheat sheet giving every sum for every cage size with the forced combinations marked, and a strategy guide on the rule of 45, innies and outies.",
   classic: "Guides, a solutions archive and four daily challenges are there too, along with a cage combinations cheat sheet and a strategy guide if you ever fancy trying killer sudoku.",
   x:       "Guides, a solutions archive and four daily challenges are there too, including a full beginner\u2019s guide and a strategy guide.",
-  hyper:   "Guides, a solutions archive and four daily challenges are there too, including a full beginner\u2019s guide and a strategy guide."
+  hyper:   "Guides, a solutions archive and four daily challenges are there too, including a full beginner\u2019s guide and a strategy guide.",
+  mixed:   "Every variation in this book is playable there too, alongside guides, a solutions archive and four daily challenges."
 };
 
 /* Difficulty copy is generated from the same tables the generator uses, so it
@@ -871,25 +925,39 @@ const KDP_GUIDES = {
 /* When a book climbs through several levels, this page is what tells the
    reader where they are — otherwise puzzle 200 getting harder just reads as
    the book being inconsistent. */
-function kdpAboutBands(mode, bands){
+function kdpAboutBands(mode, bands, modes){
   const ranges = kdpBandRanges(bands);
+  const list = (modes && modes.length) ? modes : kdpBookModes(bands, mode);
+  const mixed = list.length > 1;
   const modeName = KDP_MODE_NAME[mode] || mode;
   const blocks = [{t:"h1", s:"About the puzzles in this book"}];
-  blocks.push({t:"p", s:"This is a "+modeName.toLowerCase()+" book that gets harder as you go. "+
-    "It starts gently and finishes at the top of the range, so you can work straight through it "+
-    "and feel the climb rather than picking puzzles at random."});
+  if(mixed){
+    const names = list.map(function(m){ return KDP_MODE_NAME[m] || m; });
+    blocks.push({t:"p", s:"This book holds "+names.length+" kinds of sudoku: "+
+      names.slice(0,-1).join(", ")+" and "+names[names.length-1]+". They run in sections, "+
+      "one after another, so you can work straight through or go to the kind you came for."});
+    blocks.push({t:"p", s:"The rules for every one of them are set out earlier in this book, "+
+      "a section each. If a variation is new to you, read its rules first — they are short."});
+  } else {
+    blocks.push({t:"p", s:"This is a "+modeName.toLowerCase()+" book that gets harder as you go. "+
+      "It starts gently and finishes at the top of the range, so you can work straight through it "+
+      "and feel the climb rather than picking puzzles at random."});
+  }
   blocks.push({t:"h2", s:"How it is arranged"});
   for(const r of ranges){
     const label = (typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[r.difficulty]) || r.difficulty;
-    blocks.push({t:"li", s:"Puzzles "+r.from+" to "+r.to+" — "+label+" ("+r.count+" puzzle"+(r.count===1?"":"s")+")"});
+    const what = mixed ? ((KDP_MODE_NAME[r.mode] || r.mode) + ", " + String(label).toLowerCase()) : label;
+    blocks.push({t:"li", s:"Puzzles "+r.from+" to "+r.to+" — "+what+" ("+r.count+" puzzle"+(r.count===1?"":"s")+")"});
   }
-  blocks.push({t:"p", s:"Every puzzle is labelled with its level at the top of the page, and the "+
-    "running head along the top edge carries it too, so you always know which band you are in."});
+  blocks.push({t:"p", s:"Every puzzle is labelled at the top of the page with "+
+    (mixed ? "its kind and its level" : "its level")+", and the running head along the top edge "+
+    "carries it too, so you always know where you are."});
   const mins = ranges.map(function(r){
-    return (typeof PAR !== "undefined" && PAR[mode] && PAR[mode][r.difficulty])
-      ? Math.round(PAR[mode][r.difficulty]/60) : null;
+    const m = r.mode || mode;
+    return (typeof PAR !== "undefined" && PAR[m] && PAR[m][r.difficulty])
+      ? Math.round(PAR[m][r.difficulty]/60) : null;
   }).filter(function(x){ return x; });
-  if(mins.length >= 2)
+  if(!mixed && mins.length >= 2)
     blocks.push({t:"p", s:"Our own target times run from about "+mins[0]+" minutes at the start to "+
       "around "+mins[mins.length-1]+" minutes by the end. They are benchmarks, not a judgement — nobody is timing you."});
   blocks.push({t:"p", s:"Difficulty is set by how each grid is built, not by how it looks, and every "+
@@ -934,7 +1002,9 @@ function kdpAboutDifficulty(mode, diff){
 function kdpDefaultFront(mode, diff, opts){
   opts = opts || {};
   const year = opts.year || 2026;
-  const modeName = KDP_MODE_NAME[mode] || "Sudoku";
+  const modes = (opts.modes && opts.modes.length) ? opts.modes : [mode];
+  const mixed = modes.length > 1;
+  const modeName = mixed ? "Sudoku Variety" : (KDP_MODE_NAME[mode] || "Sudoku");
   const label = (typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[diff]) || diff;
   /* The half title is three lines, always, in this order: the company, the
      book, then the volume. They are separate fields because they are set in
@@ -961,10 +1031,10 @@ function kdpDefaultFront(mode, diff, opts){
       "Puzzles created and verified by Zaney Sudoku. Every puzzle in this volume has been checked to have exactly one solution.",
       "First edition."
     ],
-    howto: KDP_HOWTO[mode] || KDP_HOWTO.classic,
-    guides: opts.guides || KDP_GUIDES[mode] || KDP_GUIDES.classic,
+    howto: kdpHowtoFor(modes),
+    guides: opts.guides || (mixed ? KDP_GUIDES.mixed : (KDP_GUIDES[mode] || KDP_GUIDES.classic)),
     about: (opts.bands && opts.bands.length > 1)
-             ? kdpAboutBands(mode, opts.bands)
+             ? kdpAboutBands(mode, opts.bands, modes)
              : kdpAboutDifficulty(mode, diff)
   };
 }
@@ -1114,11 +1184,16 @@ function kdpContents(plan, cfg){
   const bands = (cfg && cfg.bands && cfg.bands.length)
     ? cfg.bands
     : [{difficulty: (cfg && cfg.diff) || null, count: plan.puzzleCount}];
+  /* Name the variation as well as the level once a book holds more than one,
+     because that is what a reader is looking for in the contents. */
+  const modes = kdpBookModes(bands, cfg && cfg.mode);
   let from = 0;
   for(const b of bands){
     const n = Math.min(b.count, plan.puzzleCount - from);
     if(!(n > 0)) break;
-    const name = b.difficulty && typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[b.difficulty];
+    const level = b.difficulty && typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[b.difficulty];
+    const kind = modes.length > 1 ? (KDP_MODE_NAME[b.mode] || b.mode) : null;
+    const name = kind ? (level ? kind + " · " + level : kind) : level;
     rows.push({label: (name ? name + " — puzzles " : "Puzzles ") + (from+1) + "–" + (from+n),
                page: pageOf(from)});
     from += n;
@@ -1419,9 +1494,11 @@ function kdpCollectText(cfg){
                "If this book was good company, a short review helps another solver find it — and tells us which volume to print next.",
                "More volumes in this series are listed on the previous page.",
                "Contents", "Solutions", "Puzzles ", "0123456789", cfg.front.guides];
-  for(const b of (cfg.bands||[]))
+  for(const b of (cfg.bands||[])){
     if(b.difficulty && typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[b.difficulty])
       out.push(DIFF_LABEL[b.difficulty] + " — puzzles ");
+    if(b.mode && KDP_MODE_NAME[b.mode]) out.push(KDP_MODE_NAME[b.mode] + " · ");
+  }
   for(const line of cfg.front.copyright||[]) out.push(line);
   const blocks = [].concat.apply([], (cfg.front.howto||[])).concat(cfg.front.about||[]);
   for(const b of blocks){ if(b.s) out.push(b.s); if(b.lead) out.push(b.lead); }
@@ -1464,13 +1541,16 @@ function kdpLedgerCheck(books, bookId){
   if(b.seedEnd < b.seedStart)
     throw new Error("'"+bookId+"' has seedEnd before seedStart");
   if(b.bands && b.bands.length){
-    const valid = kdpValidDifficulties(b.mode);
     for(const band of b.bands){
       if(!(band.count > 0))
         throw new Error("'"+bookId+"' has a difficulty band with no puzzles in it.");
+      /* Each band is checked against its own variation's levels, because a
+         variety book can hold a Coward's classic band next to a killer one. */
+      const bm = band.mode || b.mode;
+      const valid = kdpValidDifficulties(bm);
       if(valid.indexOf(band.difficulty) < 0)
         throw new Error("'"+bookId+"' has a '"+band.difficulty+"' band, which "+
-          (KDP_MODE_NAME[b.mode]||b.mode)+" does not have. Its levels are: "+valid.join(", ")+".");
+          (KDP_MODE_NAME[bm]||bm)+" does not have. Its levels are: "+valid.join(", ")+".");
     }
     const bt = kdpBandTotal(b.bands);
     if(bt !== b.puzzleCount)

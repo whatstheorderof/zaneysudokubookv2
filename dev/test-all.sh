@@ -28,12 +28,13 @@ node kdp-smoke-jsdom.js
 echo; echo "### 4. generate the reference interiors"
 node kdp-harness.js ZS-001 "$OUT"
 node kdp-harness.js ZS-003 "$OUT"
+node kdp-harness.js ZS-005 "$OUT"
 node kdp-harness.js ZS-003 "$OUT" 24
 
 echo; echo "### 5. structural verification + proof renders"
-python3 kdp-verify.py "$OUT" ZS-001 ZS-003 ZS-003-proof
+python3 kdp-verify.py "$OUT" ZS-001 ZS-003 ZS-005 ZS-003-proof
 
 echo; echo "### 6. solver sample + reproducibility"
-KDP_OUT="$OUT" node kdp-check-engine.js ZS-001 ZS-003
+KDP_OUT="$OUT" node kdp-check-engine.js ZS-001 ZS-003 ZS-005
 
 echo; echo "ALL SUITES PASSED"

@@ -147,17 +147,21 @@ allows("a climbing book is accepted and expands in order", function () {
     seedStart: 30000, seedEnd: 30099, puzzleCount: 100,
     bands: [{ difficulty: "easy", count: 30 }, { difficulty: "medium", count: 40 }, { difficulty: "hard", count: 30 }] };
   mod.kdpLedgerCheck({ "ZS-X": b }, "ZS-X");
-  const seq = mod.kdpBandSequence(b.bands);
+  const seq = mod.kdpBandSequence(b.bands, b.mode);
   if (seq.length !== 100) throw new Error("sequence length " + seq.length);
-  if (seq[29] !== "easy" || seq[30] !== "medium" || seq[69] !== "medium" || seq[70] !== "hard")
+  if (seq[29].difficulty !== "easy" || seq[30].difficulty !== "medium" ||
+      seq[69].difficulty !== "medium" || seq[70].difficulty !== "hard")
     throw new Error("bands do not change where they should");
+  if (seq.some(function (q) { return q.mode !== "killer"; }))
+    throw new Error("a band with no type of its own should inherit the book's");
   const r = mod.kdpBandRanges(b.bands);
   return r.map(function (x) { return x.difficulty + " " + x.from + "-" + x.to; }).join(", ");
 });
 
 allows("a book with no bands behaves as one band of its difficulty", function () {
-  const seq = mod.kdpBandSequence(mod.kdpBands({ difficulty: "hard", puzzleCount: 5 }));
-  if (seq.join(",") !== "hard,hard,hard,hard,hard") throw new Error(seq.join(","));
+  const seq = mod.kdpBandSequence(mod.kdpBands({ mode: "killer", difficulty: "hard", puzzleCount: 5 }), "killer");
+  if (seq.map(function (q) { return q.difficulty; }).join(",") !== "hard,hard,hard,hard,hard")
+    throw new Error(JSON.stringify(seq));
   return "5 puzzles, all hard";
 });
 
@@ -530,6 +534,77 @@ allows("the contents is built from the book, not typed in", function () {
   if (JSON.stringify(proof) !== JSON.stringify(rows))
     throw new Error("a proof export prints a different contents to the book");
   return rows.map(function (r) { return r.label.replace(/ — .*/, "") + " " + r.page; }).join(" · ");
+});
+
+allows("a book carries the rules for every kind of sudoku in it", function () {
+  /* The reason this matters: a reader who opens a variety book at the killer
+     section and finds only the classic rules cannot play it. */
+  const bands = [{mode: "classic", difficulty: "medium", count: 30},
+                 {mode: "killer",  difficulty: "easy",   count: 30},
+                 {mode: "x",       difficulty: "medium", count: 30},
+                 {mode: "hyper",   difficulty: "medium", count: 30}];
+  const modes = mod.kdpBookModes(bands, "classic");
+  if (modes.join(",") !== "classic,killer,x,hyper")
+    throw new Error("kinds came out as " + modes.join(","));
+
+  const plan = mod.kdpPlan("8.5x11/2up", 120, { modes: modes });
+  const reserved = plan.pages.filter(function (p) { return p.kind === "howto"; }).length;
+  if (reserved !== modes.length * 2)
+    throw new Error(reserved + " rules pages reserved for " + modes.length + " kinds");
+
+  const front = mod.kdpDefaultFront("classic", "medium", { bands: bands, modes: modes });
+  if (front.howto.length !== reserved)
+    throw new Error("front matter has " + front.howto.length + " rules pages, the plan reserved " + reserved);
+
+  /* Each kind's rules must actually be present, and in the order the puzzles
+     appear, so the sections line up with the book. */
+  const heads = front.howto.map(function (pg) {
+    const h = pg.filter(function (b) { return b.t === "h1"; })[0];
+    return h ? h.s : null;
+  }).filter(Boolean);
+  const want = ["How to play classic sudoku", "How to play killer sudoku",
+                "How to play Sudoku X", "How to play Hyper Sudoku"];
+  if (heads.join(" | ") !== want.join(" | "))
+    throw new Error("rules sections are: " + heads.join(" | "));
+
+  /* And a single-kind book is untouched by any of this. */
+  const one = mod.kdpDefaultFront("killer", "hard", {});
+  if (one.howto.length !== 2) throw new Error("a one-kind book got " + one.howto.length + " rules pages");
+  const onePlan = mod.kdpPlan("8.5x11/2up", 120);
+  if (onePlan.pages.filter(function (p) { return p.kind === "howto"; }).length !== 2)
+    throw new Error("a plan with no kinds named should reserve two rules pages");
+  if (!(plan.total > onePlan.total))
+    throw new Error("four kinds of rules should make a longer book than one");
+
+  /* The target-length maths has to know about the extra rules pages too, or a
+     variety book quietly overshoots the page count it was fitted to. */
+  const fit = mod.kdpPuzzlesForPages("8.5x11/2up", 110, { modes: modes });
+  const fitted = mod.kdpPlan("8.5x11/2up", fit.puzzleCount, { modes: modes });
+  if (fitted.total > 110) throw new Error("fitted to 110pp but plans " + fitted.total);
+  if (fit.puzzleCount >= mod.kdpPuzzlesForPages("8.5x11/2up", 110).puzzleCount)
+    throw new Error("four rules sections should cost puzzles, not be free");
+
+  return modes.length + " kinds, " + reserved + " rules pages, " + plan.total +
+         "pp vs " + onePlan.total + "pp for one kind";
+});
+
+allows("a variety book labels every puzzle with its kind", function () {
+  const bands = [{mode: "classic", difficulty: "medium", count: 20},
+                 {mode: "killer",  difficulty: "easy",   count: 20}];
+  const seq = mod.kdpBandSequence(bands, "classic");
+  if (seq.length !== 40 || seq[0].mode !== "classic" || seq[19].mode !== "classic" ||
+      seq[20].mode !== "killer" || seq[39].mode !== "killer")
+    throw new Error(JSON.stringify(seq.slice(0, 3)));
+  const plan = mod.kdpPlan("8.5x11/2up", 40, { modes: ["classic", "killer"] });
+  const rows = mod.kdpContents(plan, { mode: "classic", bands: bands });
+  if (rows[0].label.indexOf("Classic Sudoku") !== 0 || rows[1].label.indexOf("Killer Sudoku") !== 0)
+    throw new Error("contents rows: " + rows.map(function (r) { return r.label; }).join(" | "));
+  /* A single-kind book must NOT gain the kind prefix — it would be noise. */
+  const plain = mod.kdpContents(mod.kdpPlan("8.5x11/2up", 40),
+    { mode: "killer", bands: [{ mode: "killer", difficulty: "easy", count: 40 }] });
+  if (plain[0].label.indexOf("Easy — puzzles") !== 0)
+    throw new Error("one-kind contents row: " + plain[0].label);
+  return rows.map(function (r) { return r.label; }).join(" | ");
 });
 
 allows("every mode has as many how-to-play pages as the plan reserves", function () {

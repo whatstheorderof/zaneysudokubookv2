@@ -48,7 +48,7 @@ function nextSeedStart() {
   for (const k in LIB) if (LIB[k].seedEnd > max) max = LIB[k].seedEnd;
   return Math.ceil((max + 1) / 1000) * 1000;
 }
-function planFor(b) { try { return kdpPlan(b.preset, b.puzzleCount); } catch (e) { return null; } }
+function planFor(b) { try { return kdpPlanFor(b); } catch (e) { return null; } }
 function paperChoice() { const el = $("#xPaper"); return el ? el.value : "white"; }
 
 /* ---------------------------------------------------------------------------
@@ -56,8 +56,13 @@ function paperChoice() { const el = $("#xPaper"); return el ? el.value : "white"
 --------------------------------------------------------------------------- */
 function bandSummary(b) {
   const bands = kdpBands(b);
-  if (bands.length === 1) return diffName(bands[0].difficulty);
-  return bands.map(function (x) { return diffName(x.difficulty); }).join(" → ");
+  const mixed = kdpBookModes(bands, b.mode).length > 1;
+  const name = function (x) {
+    return mixed ? (KDP_MODE_NAME[x.mode] || x.mode) + " " + diffName(x.difficulty).toLowerCase()
+                 : diffName(x.difficulty);
+  };
+  if (bands.length === 1) return name(bands[0]);
+  return bands.map(name).join(mixed ? ", " : " → ");
 }
 
 /* Checking only the selected book would let a clash sit unnoticed in a corner
@@ -146,7 +151,7 @@ function refresh() {
     $("#ledgerMsg").innerHTML = "<p class='msg bad'>" + esc(e.message) + "</p>";
   }
   try {
-    const plan = kdpPlan(b.preset, b.puzzleCount);
+    const plan = kdpPlanFor(b);
     $("#readout").innerHTML = renderReadout(plan, b);
     wirePriceInputs(plan);
     $("#coverOut").innerHTML = renderCover(plan);
@@ -191,7 +196,7 @@ function downloadCover() {
   const b = LIB[SELECTED];
   if (!b) { setStatus($("#coverProg"), "Pick a book first.", "warn"); return; }
   try {
-    const plan = kdpPlan(b.preset, b.puzzleCount);
+    const plan = kdpPlanFor(b);
     const spec = kdpCoverSpec(plan, paperChoice());
     const out = kdpBuildCoverTemplate(window.jspdf.jsPDF, window.KDP_FONTS, spec,
       { title: [$("#xTitle").value.trim() || b.title, $("#xVolume").value.trim()].filter(Boolean).join(" "),
@@ -223,17 +228,36 @@ function currentPresetId() { return $("#fTrim").value + "/" + $("#fLayout").valu
 
 function bandRows() { return Array.prototype.slice.call(document.querySelectorAll("#bands .band")); }
 
-function addBandRow(difficulty, count) {
-  const mode = $("#fMode").value;
+/* A section is a run of puzzles of one type at one level. The type dropdown is
+   what makes a variety book possible: leave every row on the book's own type
+   and nothing changes, or set them differently and the book carries the rules
+   for each. */
+function bandMode(row) { return row.querySelector(".bandMode").value; }
+function bandDiff(row) { return row.querySelector(".bandDiff").value; }
+
+function addBandRow(mode, difficulty, count) {
+  mode = mode || $("#fMode").value;
   const div = document.createElement("div");
   div.className = "band";
-  div.innerHTML = "<select></select><input type='number' min='1' value='" + (count || 50) + "'>" +
+  div.innerHTML = "<select class='bandMode'>" +
+    MODES.map(function (m) { return "<option value='" + m[0] + "'>" + esc(m[1]) + "</option>"; }).join("") +
+    "</select><select class='bandDiff'></select>" +
+    "<input type='number' min='1' value='" + (count || 50) + "'>" +
     "<span class='bandFrom'></span><button class='danger small' type='button'>Remove</button>";
   $("#bands").appendChild(div);
-  fillDiffSelect(div.querySelector("select"), mode, difficulty);
-  div.querySelector("select").addEventListener("change", updatePreview);
+  div.querySelector(".bandMode").value = mode;
+  fillDiffSelect(div.querySelector(".bandDiff"), mode, difficulty);
+  /* Changing a section's type re-offers that type's levels — Coward's exists
+     for classic and nowhere else, nightmare only for killer. */
+  div.querySelector(".bandMode").addEventListener("change", function () {
+    /* Pinned once touched, so changing the book's own type later does not undo
+       a section the book deliberately set to something else. */
+    div.dataset.pinned = "1";
+    fillDiffSelect(div.querySelector(".bandDiff"), bandMode(div), bandDiff(div));
+    autoSplit(); updatePreview();
+  });
   div.querySelector("input").addEventListener("input", updatePreview);
-  div.querySelector("select").addEventListener("change", function () { autoSplit(); updatePreview(); });
+  div.querySelector(".bandDiff").addEventListener("change", function () { autoSplit(); updatePreview(); });
   div.querySelector("button").addEventListener("click", function () {
     if (bandRows().length <= 1) return;
     div.remove(); autoSplit(); updatePreview();
@@ -249,17 +273,31 @@ function targetPuzzles() {
   try {
     /* kdpPuzzlesForPages names the field puzzleCount; normalise it here so
        every caller sees one shape. */
-    const r = kdpPuzzlesForPages(currentPresetId(), n);
+    const r = kdpPuzzlesForPages(currentPresetId(), n, { modes: editorModes() });
     return { count: r.puzzleCount, pages: r.pages, short: r.short };
   } catch (e) { return { count: 0, error: e.message }; }
 }
 
 function readBands() {
   if ($("#fSingle").checked)
-    return [{ difficulty: $("#fDiff").value, count: targetPuzzles().count }];
+    return [{ mode: $("#fMode").value, difficulty: $("#fDiff").value, count: targetPuzzles().count }];
   return bandRows().map(function (r) {
-    return { difficulty: r.querySelector("select").value, count: parseInt(r.querySelector("input").value, 10) || 0 };
+    return { mode: bandMode(r), difficulty: bandDiff(r),
+             count: parseInt(r.querySelector("input").value, 10) || 0 };
   });
+}
+
+/* The distinct types in the editor right now, in order. The page count depends
+   on it, because each type brings its own rules section.
+
+   Read straight off the rows, never via readBands(): readBands() asks
+   targetPuzzles() how many puzzles fit, targetPuzzles() asks this which types
+   are in play, and routing that through readBands() again is a loop with no
+   bottom. */
+function editorModes() {
+  if ($("#fSingle").checked) return [$("#fMode").value];
+  return kdpBookModes(bandRows().map(function (r) { return { mode: bandMode(r) }; }),
+                      $("#fMode").value);
 }
 
 /* Spread the target across whatever levels are listed. Called whenever the
@@ -270,7 +308,7 @@ function autoSplit() {
   const rows = bandRows();
   if (!rows.length) return;
   const split = kdpSplitBands(targetPuzzles().count,
-    rows.map(function (r) { return r.querySelector("select").value; }));
+    rows.map(function (r) { return { mode: bandMode(r), difficulty: bandDiff(r) }; }));
   rows.forEach(function (r, i) { r.querySelector("input").value = split[i].count; });
 }
 
@@ -292,7 +330,7 @@ function updatePreview() {
 
   let line = total + " puzzle" + (total === 1 ? "" : "s");
   try {
-    const plan = kdpPlan(currentPresetId(), total);
+    const plan = kdpPlan(currentPresetId(), total, { modes: kdpBookModes(bands, $("#fMode").value) });
     const pr = kdpPricing(plan, paperChoice());
     line += " → <b>" + plan.total + " pages</b> · spine " + pr.spineCm.toFixed(2) + " cm · " +
       "print " + money(pr.currencies.GBP.print, "GBP") + " / " + money(pr.currencies.USD.print, "USD");
@@ -318,7 +356,8 @@ function applyAltLock() {
   const locked = !!base;
   ["fMode", "fDiff", "fSeed", "fSingle", "fClimb", "fTarget", "fTargetMode"].forEach(function (id) { $("#" + id).disabled = locked; });
   bandRows().forEach(function (r) {
-    r.querySelector("select").disabled = locked;
+    r.querySelector(".bandMode").disabled = locked;
+    r.querySelector(".bandDiff").disabled = locked;
     r.querySelector("input").disabled = locked;
   });
   $("#btnAddBand").disabled = locked;
@@ -341,7 +380,7 @@ function setBands(bands, mode) {
   $("#bands").innerHTML = "";
   fillDiffSelect($("#fDiff"), mode, bands[0].difficulty);
   $(bands.length === 1 ? "#fSingle" : "#fClimb").checked = true;
-  for (const b of bands) addBandRow(b.difficulty, b.count);
+  for (const b of bands) addBandRow(b.mode || mode, b.difficulty, b.count);
   syncDiffMode();
 }
 
@@ -354,7 +393,7 @@ function syncDiffMode() {
     if (bandRows().length < 2) {
       const ds = kdpValidDifficulties($("#fMode").value);
       $("#bands").innerHTML = "";
-      for (const d of ds.slice(0, 3)) addBandRow(d, 1);
+      for (const d of ds.slice(0, 3)) addBandRow($("#fMode").value, d, 1);
     }
     autoSplit();
   }
@@ -383,7 +422,8 @@ function openEditor(id) {
   const startBands = b ? kdpBands(b) : [{ difficulty: "hard", count: preset.defaultPuzzles }];
   const startCount = kdpBandTotal(startBands);
   $("#fTargetMode").value = "pages";
-  try { $("#fTarget").value = kdpPlan(currentPresetId(), startCount).total; }
+  try { $("#fTarget").value = kdpPlan(currentPresetId(), startCount,
+          { modes: kdpBookModes(startBands, b ? b.mode : "killer") }).total; }
   catch (e) { $("#fTargetMode").value = "puzzles"; $("#fTarget").value = startCount; }
   setBands(startBands, $("#fMode").value);
   syncAltOptions();
@@ -563,8 +603,9 @@ function dealSync(kind, diff, num) {
   return Object.assign(dealPuzzle(num, diff), { kind: "killer" });
 }
 
-/* seq[i] is the difficulty of puzzle i, so a book that climbs deals correctly. */
-function dealPool(engineSrc, kind, seq, seedStart, count, onProgress) {
+/* seq[i] is {mode, difficulty} for puzzle i, so a book that climbs — or one
+   that changes type partway through — deals correctly. */
+function dealPool(engineSrc, seq, seedStart, count, onProgress) {
   return new Promise(function (resolve, reject) {
     const out = new Array(count);
     let next = 0, done = 0;
@@ -589,7 +630,7 @@ function dealPool(engineSrc, kind, seq, seedStart, count, onProgress) {
       const tick = function () {
         if (next >= count) return;
         const idx = next++;
-        settle(idx, dealSync(kind, seq[idx], seedStart + idx));
+        settle(idx, dealSync(seq[idx].mode, seq[idx].difficulty, seedStart + idx));
         setTimeout(tick, 0);
       };
       return tick();
@@ -597,7 +638,7 @@ function dealPool(engineSrc, kind, seq, seedStart, count, onProgress) {
     const feed = function (w) {
       if (next >= count) return false;
       const i = next++;
-      w.postMessage({ i: i, num: seedStart + i, diff: seq[i], kind: kind });
+      w.postMessage({ i: i, num: seedStart + i, diff: seq[i].difficulty, kind: seq[i].mode });
       return true;
     };
     workers.forEach(function (w) {
@@ -621,13 +662,13 @@ function doExport() {
 
   const proof = $("#xProof").checked;
   const proofPages = parseInt($("#xProofPages").value, 10) || 24;
-  const seq = kdpBandSequence(kdpBands(book));
+  const seq = kdpBandSequence(kdpBands(book), book.mode);
   let plan;
 
   setStatus(prog, "Checking the puzzle engine…");
   getEngine().then(function (eng) {
     const chk = kdpLedgerCheck(LIB, id);
-    plan = kdpPlan(book.preset, book.puzzleCount);
+    plan = kdpPlanFor(book);
     const errs = kdpWarnings(plan).filter(function (w) { return w.level === "error"; });
     if (errs.length) throw new Error(errs.map(function (w) { return w.text; }).join("\n\n"));
 
@@ -643,7 +684,7 @@ function doExport() {
         if (pg.items) for (const idx of pg.items) need = Math.max(need, idx + 1);
       }
     }
-    return dealPool(eng.src, book.mode, seq, book.seedStart, need, function (d, t) {
+    return dealPool(eng.src, seq, book.seedStart, need, function (d, t) {
       if (d % 4 === 0 || d === t) setStatus(prog, "Dealing " + d + " of " + t + "…");
     }).then(function (deck) {
       /* Overlapping ranges are refused by the ledger; this is the other half of
@@ -657,10 +698,15 @@ function doExport() {
     });
   }).then(function (bundle) {
     const modeName = KDP_MODE_NAME[book.mode] || book.mode;
+    const bookModes = kdpBookModes(kdpBands(book), book.mode);
     const puzzles = bundle.deck.map(function (P, i) {
-      const label = diffName(seq[i]);
+      const label = diffName(seq[i].difficulty);
+      const kind = KDP_MODE_NAME[seq[i].mode] || seq[i].mode;
+      /* In a variety book the label above the grid names the kind too, because
+         the reader has to know which rules apply before they start. */
+      const shown = bookModes.length > 1 ? kind + " · " + label : label;
       return { P: P, n: i + 1, label: "Puzzle " + (i + 1), solLabel: String(i + 1),
-               diffLabel: label, runHead: modeName + " · " + label };
+               diffLabel: shown, runHead: kind + " · " + label };
     });
     const front = kdpDefaultFront(book.mode, book.difficulty, {
       bookName: $("#xTitle").value.trim() || book.title,
@@ -670,7 +716,7 @@ function doExport() {
       isbn: $("#xIsbn").value.trim(),
       puzzleCount: book.puzzleCount,
       year: new Date().getUTCFullYear(),
-      bands: kdpBands(book)
+      bands: kdpBands(book), modes: bookModes
     });
     const solPage = plan.solutionStart;
     front.howto = front.howto.map(function (pg) {
@@ -766,20 +812,40 @@ $("#btnReset").addEventListener("click", function () {
 });
 $("#btnAddBand").addEventListener("click", function () {
   const last = bandRows().slice(-1)[0];
-  const ds = kdpValidDifficulties($("#fMode").value);
+  const mode = last ? bandMode(last) : $("#fMode").value;
+  const ds = kdpValidDifficulties(mode);
   let nextDiff = ds[0];
   if (last) {
-    const i = ds.indexOf(last.querySelector("select").value);
+    const i = ds.indexOf(bandDiff(last));
     nextDiff = ds[Math.min(i + 1, ds.length - 1)];
   }
-  addBandRow(nextDiff, 1);
+  addBandRow(mode, nextDiff, 1);
+  autoSplit();
+  updatePreview();
+});
+$("#btnVariety").addEventListener("click", function () {
+  /* One section of each type, all at the same level, split evenly. The fastest
+     route to a variety book, which is a category of its own on KDP. */
+  const want = $("#fClimb").checked ? null : $("#fDiff").value;
+  $("#fClimb").checked = true; syncDiffMode();
+  $("#bands").innerHTML = "";
+  for (const m of MODES) {
+    const ds = kdpValidDifficulties(m[0]);
+    addBandRow(m[0], ds.indexOf(want) >= 0 ? want : ds[Math.min(1, ds.length - 1)], 1);
+  }
   autoSplit();
   updatePreview();
 });
 $("#fMode").addEventListener("change", function () {
   const mode = $("#fMode").value;
   fillDiffSelect($("#fDiff"), mode, $("#fDiff").value);
-  bandRows().forEach(function (r) { fillDiffSelect(r.querySelector("select"), mode, r.querySelector("select").value); });
+  /* Sections still pointing at the old book type follow it; ones deliberately
+     set to something else are left alone. */
+  bandRows().forEach(function (r) {
+    if (r.dataset.pinned === "1") return;
+    r.querySelector(".bandMode").value = mode;
+    fillDiffSelect(r.querySelector(".bandDiff"), mode, bandDiff(r));
+  });
   updatePreview();
 });
 $("#fTrim").addEventListener("change", function () { autoSplit(); updatePreview(); });

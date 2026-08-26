@@ -17,6 +17,17 @@ const { JSDOM, VirtualConsole } = require("jsdom");
 const { webcrypto } = require("crypto");
 
 const ROOT = path.dirname(__dirname);
+
+/* A watchdog, because the failure this suite caught once was a hang, not a
+   wrong answer: two editor helpers called each other and the page locked up.
+   A test run that stops producing output is worse than one that fails, so if
+   the whole thing has not finished in two minutes, say so and exit. */
+const WATCHDOG = setTimeout(function () {
+  fs.writeSync(2, "\nJSDOM SUITE TIMED OUT after 120s — the page is stuck in a loop, " +
+                  "not merely failing. Check what ran last above.\n");
+  process.exit(1);
+}, 120000);
+WATCHDOG.unref ? null : null;
 let pass = 0, fail = 0;
 function check(name, ok, detail) {
   if (ok) { pass++; console.log("  PASS  " + name + (detail ? "  - " + detail : "")); }
@@ -221,7 +232,7 @@ function run() {
     check("the target is split across them automatically, with no arithmetic from me",
       Array.prototype.map.call(bandsOf(), function (r) { return r.querySelector("input").value; }).join(",") === "40,40,40",
       Array.prototype.map.call(bandsOf(), function (r) {
-        return r.querySelector("select").value + " " + r.querySelector("input").value;
+        return r.querySelector(".bandDiff").value + " " + r.querySelector("input").value;
       }).join(" / "));
     check("each level shows which puzzle numbers it covers",
       /puzzles 1–40/.test(bandsOf()[0].textContent) && /puzzles 81–120/.test(bandsOf()[2].textContent),
@@ -245,12 +256,56 @@ function run() {
       b.bands.map(function (x) { return x.count; }).join(",") === "40,40,40",
       G("SELECTED") + " · " + b.bands.map(function (x) { return x.difficulty + "×" + x.count; }).join(" → "));
     check("its puzzle count matches the levels", b.puzzleCount === 120 && b.seedEnd - b.seedStart + 1 === 120);
-    const seq = G("kdpBandSequence")(b.bands);
-    check("the deal order climbs", seq.length === 120 && seq[0] === b.bands[0].difficulty &&
-      seq[40] === b.bands[1].difficulty && seq[80] === b.bands[2].difficulty);
+    const seq = G("kdpBandSequence")(b.bands, b.mode);
+    check("the deal order climbs", seq.length === 120 && seq[0].difficulty === b.bands[0].difficulty &&
+      seq[40].difficulty === b.bands[1].difficulty && seq[80].difficulty === b.bands[2].difficulty);
     check("the front matter explains the progression",
       G("kdpDefaultFront")("classic", "easy", { title: "t", bands: b.bands })
         .about.some(function (x) { return /Puzzles 41 to 80/.test(x.s || ""); }));
+
+    /* ---- a variety book, in three clicks --------------------------------- */
+    $("#btnNew").dispatchEvent(new win.Event("click", { bubbles: true }));
+    $("#fTitle").value = "Sudoku Variety";
+    $("#fTargetMode").value = "puzzles";
+    $("#fTargetMode").dispatchEvent(new win.Event("change", { bubbles: true }));
+    $("#fTarget").value = "120";
+    $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
+    $("#btnVariety").dispatchEvent(new win.Event("click", { bubbles: true }));
+    const vRows = function () { return win.document.querySelectorAll("#bands .band"); };
+    check("one click builds a section for every kind of sudoku",
+      vRows().length === 4 &&
+      Array.prototype.map.call(vRows(), function (r) { return r.querySelector(".bandMode").value; })
+        .join(",") === "killer,classic,x,hyper",
+      Array.prototype.map.call(vRows(), function (r) {
+        return r.querySelector(".bandMode").value + " " + r.querySelector(".bandDiff").value +
+               " ×" + r.querySelector("input").value;
+      }).join(" / "));
+    check("each section offers only the levels its own kind has",
+      Array.prototype.map.call(vRows(), function (r) {
+        return Array.prototype.map.call(r.querySelector(".bandDiff").options,
+          function (o) { return o.value; }).join(",");
+      }).join(" | ") === [G("DIFFS"), G("CLASSIC_DIFFS"), G("X_DIFFS"), G("H_DIFFS")]
+        .map(function (d) { return d.join(","); }).join(" | "),
+      "Coward's is classic-only, nightmare is killer-only");
+    check("the page count grows to make room for four sets of rules",
+      /\d+ pages/.test($("#editPreview").textContent), $("#editPreview").textContent.trim().slice(0, 90));
+    $("#btnSaveBook").dispatchEvent(new win.Event("click", { bubbles: true }));
+    return settle();
+  }).then(function () {
+    const v = G("LIB")[G("SELECTED")];
+    check("the variety book stores a kind against every section",
+      !!v.bands && v.bands.length === 4 &&
+      v.bands.map(function (x) { return x.mode; }).join(",") === "killer,classic,x,hyper",
+      G("SELECTED") + " · " + v.bands.map(function (x) { return x.mode + "×" + x.count; }).join(", "));
+    const vplan = G("kdpPlanFor")(v);
+    const vfront = G("kdpDefaultFront")(v.mode, v.difficulty,
+      { bands: G("kdpBands")(v), modes: G("kdpBookModes")(G("kdpBands")(v), v.mode) });
+    check("it carries the rules for all four, and the plan makes room for them",
+      vfront.howto.length === 8 &&
+      vplan.pages.filter(function (p) { return p.kind === "howto"; }).length === 8,
+      vfront.howto.length + " rules pages");
+    check("the library row names the mix", /Killer/.test($("#libBody").textContent) &&
+      /Hyper/.test($("#libBody").textContent));
 
     /* ---- refusals ------------------------------------------------------- */
     $("#btnNew").dispatchEvent(new win.Event("click", { bubbles: true }));
@@ -325,7 +380,8 @@ function run() {
 
     console.log("\n" + (pass + fail) + " checks, " + fail + " failed");
     win.close();
-    process.exit(fail ? 1 : 0);
+    clearTimeout(WATCHDOG);
+  process.exit(fail ? 1 : 0);
   });
 }
 

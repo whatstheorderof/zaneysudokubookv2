@@ -96,26 +96,37 @@ function checkBook(bookId) {
   while (picked.size < Math.min(20, book.puzzleCount)) picked.add((r() * book.puzzleCount) | 0);
   const sample = Array.from(picked).sort(function (a, b) { return a - b; });
 
-  const seq = mod.kdpBandSequence(mod.kdpBands(book));
-  const useX = book.mode === "x", useH = book.mode === "hyper";
+  const seq = mod.kdpBandSequence(mod.kdpBands(book), book.mode);
   const ranges = mod.kdpBandRanges(mod.kdpBands(book));
+  const modes = mod.kdpBookModes(mod.kdpBands(book), book.mode);
+  const lvl = function (i) { return mod.DIFF_LABEL[seq[i].difficulty] || seq[i].difficulty; };
   if (ranges.length > 1)
     console.log("  bands: " + ranges.map(function (r) {
-      return r.difficulty + " " + r.from + "-" + r.to;
+      return (modes.length > 1 ? r.mode + " " : "") + r.difficulty + " " + r.from + "-" + r.to;
     }).join(", "));
   check("every puzzle carries the difficulty its band says",
-    first.cfg.puzzles.every(function (p, i) { return p.diffLabel === (mod.DIFF_LABEL[seq[i]] || seq[i]); }) &&
-    first.deck.every(function (P, i) { return P.diff === seq[i]; }),
+    first.cfg.puzzles.every(function (p, i) { return p.diffLabel.indexOf(lvl(i)) >= 0; }) &&
+    first.deck.every(function (P, i) { return P.diff === seq[i].difficulty; }),
     seq.length + " puzzles checked against the band sequence");
   check("the running head follows the band",
-    first.cfg.puzzles.every(function (p, i) { return p.runHead.indexOf(mod.DIFF_LABEL[seq[i]] || seq[i]) >= 0; }));
+    first.cfg.puzzles.every(function (p, i) { return p.runHead.indexOf(lvl(i)) >= 0; }));
+  /* In a variety book each puzzle also has to BE the kind its band claims, or
+     the rules printed for that section do not apply to it. */
+  check("every puzzle is the kind its section says",
+    first.deck.every(function (P, i) { return (P.kind || "killer") === seq[i].mode; }) &&
+    first.cfg.puzzles.every(function (p, i) {
+      return p.runHead.indexOf(mod.KDP_MODE_NAME[seq[i].mode]) === 0;
+    }),
+    modes.length > 1 ? modes.join(" → ") + ", " + seq.length + " puzzles" : "one kind throughout");
   const bad = [];
   for (const idx of sample) {
     const P = first.deck[idx];
+    const kind = seq[idx].mode;
+    const useX = kind === "x", useH = kind === "hyper";
     const why = gridLegal(P.sol, useX, useH);
     if (why) { bad.push("#" + (idx + 1) + " printed solution is not a legal grid (" + why + ")"); continue; }
 
-    if (book.mode === "killer") {
+    if (kind === "killer") {
       for (const g of P.cages) {
         let sum = 0, m = 0;
         for (const c of g.cells) {
@@ -156,7 +167,7 @@ function checkBook(bookId) {
      book testable without dealing it three times over. */
   const redealt = [];
   for (const idx of sample) {
-    const again = H.dealOne(book.mode, seq[idx], book.seedStart + idx);
+    const again = H.dealOne(seq[idx].mode, seq[idx].difficulty, book.seedStart + idx);
     const P = first.deck[idx];
     let ok = true;
     for (let i = 0; i < 81; i++) if (again.sol[i] !== P.sol[i] || again.given[i] !== P.given[i]) ok = false;

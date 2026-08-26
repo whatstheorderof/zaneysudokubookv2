@@ -37,7 +37,8 @@ const EXPORTS = [
   "kdpUnsupportedChars","kdpCollectText","kdpBands","kdpBandSequence","kdpBandRanges","kdpBandTotal",
   "kdpResolvePreset","KDP_TRIMS","KDP_LAYOUTS","kdpValidDifficulties",
   "kdpPuzzlesForPages","kdpSplitBands","kdpAuditLedger","kdpFingerprint","kdpFindDuplicates",
-  "kdpCoverSpec","kdpBuildCoverTemplate","kdpSpineIn","kdpContents","KDP_FRONT"
+  "kdpCoverSpec","kdpBuildCoverTemplate","kdpSpineIn","kdpContents","KDP_FRONT",
+  "kdpPlanFor","kdpBookModes","kdpHowtoFor","kdpHowtoPages"
 ];
 
 const mod = new Function(
@@ -67,9 +68,10 @@ function build(bookId, opts) {
   const book = books[bookId];
   if (!book) throw new Error("no such book " + bookId);
   const ledger = mod.kdpLedgerCheck(books, bookId);
-  const plan = mod.kdpPlan(book.preset, book.puzzleCount);
+  const plan = mod.kdpPlanFor(book);
 
-  const seq = mod.kdpBandSequence(mod.kdpBands(book));   /* difficulty per puzzle */
+  const seq = mod.kdpBandSequence(mod.kdpBands(book), book.mode);  /* type + level per puzzle */
+  const seqKey = seq.map(function (q) { return q.mode + ":" + q.difficulty; }).join(",");
   const t0 = Date.now();
   let deck = opts.deck || null;
   /* Test-harness convenience only: 336 killer grids take minutes to deal, and
@@ -80,7 +82,7 @@ function build(bookId, opts) {
     const raw = JSON.parse(fs.readFileSync(opts.deckFile, "utf8"));
     if (raw.mode === book.mode && raw.difficulty === book.difficulty &&
         raw.seedStart === book.seedStart && raw.deck.length === book.puzzleCount &&
-        raw.bandKey === seq.join(",")) {
+        raw.bandKey === seqKey) {
       deck = raw.deck.map(function (d) {
         return { num: d.num, diff: d.diff, kind: d.kind,
                  sol: Uint8Array.from(d.sol), cages: d.cages,
@@ -91,14 +93,14 @@ function build(bookId, opts) {
   if (!deck) {
     deck = [];
     for (let i = 0; i < book.puzzleCount; i++) {
-      deck.push(dealOne(book.mode, seq[i], book.seedStart + i));
+      deck.push(dealOne(seq[i].mode, seq[i].difficulty, book.seedStart + i));
       if (opts.onProgress && (i % 25 === 0 || i === book.puzzleCount - 1))
         opts.onProgress(i + 1, book.puzzleCount);
     }
     if (opts.deckFile) {
       fs.writeFileSync(opts.deckFile, JSON.stringify({
         mode: book.mode, difficulty: book.difficulty, seedStart: book.seedStart,
-        bandKey: seq.join(","),
+        bandKey: seqKey,
         deck: deck.map(function (d) {
           return { num: d.num, diff: d.diff, kind: d.kind, sol: Array.from(d.sol),
                    cages: d.cages, cageOf: Array.from(d.cageOf), given: Array.from(d.given) };
@@ -109,15 +111,20 @@ function build(bookId, opts) {
   const dealMs = Date.now() - t0;
 
   const modeName = mod.KDP_MODE_NAME[book.mode] || book.mode;
+  const bookModes = mod.kdpBookModes(mod.kdpBands(book), book.mode);
   const puzzles = deck.map(function (P, i) {
-    const d = seq[i], label = mod.DIFF_LABEL[d] || d;
+    const q = seq[i], label = mod.DIFF_LABEL[q.difficulty] || q.difficulty;
+    const kind = mod.KDP_MODE_NAME[q.mode] || q.mode;
+    /* In a variety book the label on the puzzle says which kind it is, because
+       the reader has to know which rules apply before they start. */
+    const shown = bookModes.length > 1 ? kind + " · " + label : label;
     return { P: P, n: i + 1, label: "Puzzle " + (i + 1), solLabel: String(i + 1),
-             diffLabel: label, runHead: modeName + " · " + label };
+             diffLabel: shown, runHead: kind + " · " + label };
   });
 
   const front = mod.kdpDefaultFront(book.mode, book.difficulty, {
     bookName: book.title, volume: book.volume, puzzleCount: book.puzzleCount, year: 2026,
-    bands: mod.kdpBands(book)
+    bands: mod.kdpBands(book), modes: bookModes
   });
   const solPage = plan.solutionStart;
   front.howto = front.howto.map(function (pg) {
