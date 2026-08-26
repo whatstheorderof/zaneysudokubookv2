@@ -143,6 +143,12 @@ function checkBook(bookId) {
   check("solution N solves puzzle N - " + sample.length + " random samples", bad.length === 0,
     bad.length ? bad.slice(0, 3).join("; ") : "puzzles " + sample.map(function (i) { return i + 1; }).join(","));
 
+  /* --- no repeats, anywhere in the book -------------------------------- */
+  const dupes = mod.kdpFindDuplicates(first.deck);
+  check("no puzzle in this book repeats another", dupes.length === 0,
+    dupes.length ? "puzzle " + dupes[0].repeat + " is identical to puzzle " + dupes[0].first
+                 : first.deck.length + " puzzles fingerprinted, all distinct");
+
   /* --- reproducibility ---------------------------------------------------
      Two halves. The dealer is re-run over a sample of seeds and must produce
      identical puzzles; the composer is re-run over the whole deck and must

@@ -161,6 +161,26 @@ function run() {
       /pages/.test($("#editPreview").textContent) && /print/.test($("#editPreview").textContent),
       $("#editPreview").textContent.trim().slice(0, 80));
 
+    /* ---- target length drives the puzzle count ------------------------- */
+    check("a new book is fitted to a page count by default", $("#fTargetMode").value === "pages",
+      "target " + $("#fTarget").value + " pages");
+    $("#fTarget").value = "402";
+    $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
+    check("asking for 402 pages works back to 336 puzzles",
+      /336 puzzles/.test($("#fFit").textContent) && /402 pages/.test($("#fFit").textContent),
+      $("#fFit").textContent.trim());
+    $("#fTarget").value = "110";
+    $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
+    check("a target under KDP's minimum for this size says so",
+      /shortest/.test($("#fFit").textContent) || /puzzles/.test($("#fFit").textContent),
+      $("#fFit").textContent.trim());
+    $("#fTrim").value = "8.5x11"; $("#fLayout").value = "2up";
+    $("#fLayout").dispatchEvent(new win.Event("change", { bubbles: true }));
+    check("the flat-fee ceiling of 110 pages gives 160 puzzles at 8.5x11 two-up",
+      /160 puzzles/.test($("#fFit").textContent), $("#fFit").textContent.trim());
+    $("#fTrim").value = "5.06x7.81"; $("#fLayout").value = "1up";
+    $("#fLayout").dispatchEvent(new win.Event("change", { bubbles: true }));
+
     $("#fTitle").value = "Sudoku X: Portable";
     $("#fMode").value = "x";
     $("#fMode").dispatchEvent(new win.Event("change", { bubbles: true }));
@@ -168,8 +188,10 @@ function run() {
       Array.prototype.map.call($("#fDiff").options, function (o) { return o.value; }).join(",") === G("X_DIFFS").join(","));
     $("#fTrim").value = "6x9";
     $("#fTrim").dispatchEvent(new win.Event("change", { bubbles: true }));
-    $("#fCount").value = "120";
-    $("#fCount").dispatchEvent(new win.Event("input", { bubbles: true }));
+    $("#fTargetMode").value = "puzzles";
+    $("#fTargetMode").dispatchEvent(new win.Event("change", { bubbles: true }));
+    $("#fTarget").value = "120";
+    $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
     $("#btnSaveBook").dispatchEvent(new win.Event("click", { bubbles: true }));
     return settle();
   }).then(function () {
@@ -183,44 +205,59 @@ function run() {
     $("#fTitle").value = "Classic: Easy to Hard";
     $("#fMode").value = "classic";
     $("#fMode").dispatchEvent(new win.Event("change", { bubbles: true }));
+    $("#fTargetMode").value = "puzzles";
+    $("#fTargetMode").dispatchEvent(new win.Event("change", { bubbles: true }));
+    $("#fTarget").value = "120";
+    $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
     $("#fClimb").checked = true;
     $("#fClimb").dispatchEvent(new win.Event("change", { bubbles: true }));
     check("switching to climbing shows the level list and hides the single one",
       shown("#climbWrap") && !shown("#singleWrap"));
     const bandsOf = function () { return win.document.querySelectorAll("#bands .band"); };
-    while (bandsOf().length < 3) $("#btnAddBand").dispatchEvent(new win.Event("click", { bubbles: true }));
-    const set = [["easy", 40], ["medium", 50], ["hard", 30]];
-    bandsOf().forEach(function (r, i) {
-      r.querySelector("select").value = set[i][0];
-      r.querySelector("input").value = String(set[i][1]);
-      r.querySelector("input").dispatchEvent(new win.Event("input", { bubbles: true }));
-    });
+    check("it offers a ladder of levels rather than one", bandsOf().length >= 3,
+      bandsOf().length + " levels");
+    check("the target is split across them automatically, with no arithmetic from me",
+      Array.prototype.map.call(bandsOf(), function (r) { return r.querySelector("input").value; }).join(",") === "40,40,40",
+      Array.prototype.map.call(bandsOf(), function (r) {
+        return r.querySelector("select").value + " " + r.querySelector("input").value;
+      }).join(" / "));
     check("each level shows which puzzle numbers it covers",
-      /puzzles 1–40/.test(bandsOf()[0].textContent) && /puzzles 91–120/.test(bandsOf()[2].textContent),
+      /puzzles 1–40/.test(bandsOf()[0].textContent) && /puzzles 81–120/.test(bandsOf()[2].textContent),
       Array.prototype.map.call(bandsOf(), function (r) { return r.querySelector(".bandFrom").textContent; }).join(" / "));
     check("the running total is shown", /120 puzzles in total/.test($("#bandTotal").textContent),
       $("#bandTotal").textContent);
+
+    /* changing the target re-splits without touching the levels */
+    $("#fTarget").value = "150";
+    $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
+    check("changing the target re-splits the levels", 
+      Array.prototype.map.call(bandsOf(), function (r) { return r.querySelector("input").value; }).join(",") === "50,50,50",
+      "150 across 3 levels");
+    $("#fTarget").value = "120";
+    $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
     $("#btnSaveBook").dispatchEvent(new win.Event("click", { bubbles: true }));
     return settle();
   }).then(function () {
     const b = G("LIB")[G("SELECTED")];
     check("the climbing book stores its levels in order", !!b.bands && b.bands.length === 3 &&
-      b.bands.map(function (x) { return x.difficulty + ":" + x.count; }).join(",") === "easy:40,medium:50,hard:30",
+      b.bands.map(function (x) { return x.count; }).join(",") === "40,40,40",
       G("SELECTED") + " · " + b.bands.map(function (x) { return x.difficulty + "×" + x.count; }).join(" → "));
     check("its puzzle count matches the levels", b.puzzleCount === 120 && b.seedEnd - b.seedStart + 1 === 120);
     const seq = G("kdpBandSequence")(b.bands);
-    check("the deal order climbs", seq.length === 120 && seq[0] === "easy" && seq[39] === "easy" &&
-      seq[40] === "medium" && seq[89] === "medium" && seq[90] === "hard" && seq[119] === "hard");
+    check("the deal order climbs", seq.length === 120 && seq[0] === b.bands[0].difficulty &&
+      seq[40] === b.bands[1].difficulty && seq[80] === b.bands[2].difficulty);
     check("the front matter explains the progression",
       G("kdpDefaultFront")("classic", "easy", { title: "t", bands: b.bands })
-        .about.some(function (x) { return /Puzzles 41 to 90/.test(x.s || ""); }));
+        .about.some(function (x) { return /Puzzles 41 to 80/.test(x.s || ""); }));
 
     /* ---- refusals ------------------------------------------------------- */
     $("#btnNew").dispatchEvent(new win.Event("click", { bubbles: true }));
     $("#fTitle").value = "Deliberate clash";
     $("#fSeed").value = String(books["ZS-003"].seedStart + 10);
-    $("#fCount").value = "50";
-    $("#fCount").dispatchEvent(new win.Event("input", { bubbles: true }));
+    $("#fTargetMode").value = "puzzles";
+    $("#fTargetMode").dispatchEvent(new win.Event("change", { bubbles: true }));
+    $("#fTarget").value = "50";
+    $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
     const n = rows().length;
     $("#btnSaveBook").dispatchEvent(new win.Event("click", { bubbles: true }));
     return settle().then(function () {
@@ -248,6 +285,34 @@ function run() {
     check("a second edition at another trim is accepted",
       b && b.altEditionOf === "ZS-001" && b.preset === "5.83x8.27/1up",
       G("SELECTED") + " · " + (b && b.preset));
+
+    /* ---- repeats ------------------------------------------------------- */
+    check("the library reports that nothing repeats", /No repeated puzzles/.test($("#libMsg").innerHTML),
+      $("#libMsg").textContent.trim().slice(0, 70));
+    check("a duplicate inside one book would be caught",
+      G("kdpFindDuplicates")([{ sol: new Array(81).fill(1), given: new Array(81).fill(0), cages: [] },
+                              { sol: new Array(81).fill(2), given: new Array(81).fill(0), cages: [] },
+                              { sol: new Array(81).fill(1), given: new Array(81).fill(0), cages: [] }])
+        .length === 1);
+    check("distinct puzzles are not flagged",
+      G("kdpFindDuplicates")([{ sol: new Array(81).fill(1), given: new Array(81).fill(0), cages: [] },
+                              { sol: new Array(81).fill(2), given: new Array(81).fill(0), cages: [] }])
+        .length === 0);
+
+    /* ---- cover --------------------------------------------------------- */
+    const cv = $("#coverOut").innerHTML;
+    check("the cover panel gives the full canvas, spine and barcode zone",
+      /Full cover/.test(cv) && /Spine/.test(cv) && /Barcode/.test(cv) && /px<\/b> at 300 dpi/.test(cv));
+    check("it links to KDP's own cover calculator", /kdp\.amazon\.com\/cover-calculator/.test(cv));
+    check("the cover template button is present", !!$("#btnCover"));
+    const before = $("#coverOut").textContent;
+    $("#xPaper").value = "cream";
+    $("#xPaper").dispatchEvent(new win.Event("change", { bubbles: true }));
+    check("switching to cream paper changes the spine and cover size",
+      $("#coverOut").textContent !== before,
+      ($("#coverOut").textContent.match(/Spine[^·]+/) || [""])[0].trim().slice(0, 46));
+    $("#xPaper").value = "white";
+    $("#xPaper").dispatchEvent(new win.Event("change", { bubbles: true }));
 
     check("the proof page count is hidden until proof mode is ticked", !shown("#xProofRow"));
     $("#xProof").checked = true;

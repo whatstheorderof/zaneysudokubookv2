@@ -49,6 +49,7 @@ function nextSeedStart() {
   return Math.ceil((max + 1) / 1000) * 1000;
 }
 function planFor(b) { try { return kdpPlan(b.preset, b.puzzleCount); } catch (e) { return null; } }
+function paperChoice() { const el = $("#xPaper"); return el ? el.value : "white"; }
 
 /* ---------------------------------------------------------------------------
    Library table
@@ -57,6 +58,22 @@ function bandSummary(b) {
   const bands = kdpBands(b);
   if (bands.length === 1) return diffName(bands[0].difficulty);
   return bands.map(function (x) { return diffName(x.difficulty); }).join(" → ");
+}
+
+/* Checking only the selected book would let a clash sit unnoticed in a corner
+   of the library until the day you exported it. Audit the lot, every render. */
+function renderAudit() {
+  const problems = kdpAuditLedger(LIB);
+  if (!problems.length) {
+    const n = Object.keys(LIB).length;
+    $("#libMsg").innerHTML = n
+      ? "<p class='msg ok'>No repeated puzzles: all " + n + " book" + (n === 1 ? "" : "s") +
+        " checked against each other, every seed range accounted for.</p>"
+      : "";
+    return;
+  }
+  $("#libMsg").innerHTML = "<p class='msg bad'>Repeated puzzles in the library — fix before publishing:<br>" +
+    problems.map(function (p) { return "· " + esc(p.message); }).join("<br>") + "</p>";
 }
 
 function renderLibrary() {
@@ -104,6 +121,7 @@ function renderLibrary() {
     });
   });
   if (!SELECTED || !LIB[SELECTED]) SELECTED = ids[0];
+  renderAudit();
 }
 
 function selectBook(id) {
@@ -127,10 +145,64 @@ function refresh() {
     $("#ledgerMsg").innerHTML = "<p class='msg bad'>" + esc(e.message) + "</p>";
   }
   try {
-    $("#readout").innerHTML = renderReadout(kdpPlan(b.preset, b.puzzleCount), b);
-    wirePriceInputs(kdpPlan(b.preset, b.puzzleCount));
+    const plan = kdpPlan(b.preset, b.puzzleCount);
+    $("#readout").innerHTML = renderReadout(plan, b);
+    wirePriceInputs(plan);
+    $("#coverOut").innerHTML = renderCover(plan);
   } catch (e) {
     $("#readout").innerHTML = "<p class='msg bad'>" + esc(e.message) + "</p>";
+    $("#coverOut").innerHTML = "";
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Cover — the same numbers KDP's cover calculator returns, from the page count
+   this exporter will actually produce.
+--------------------------------------------------------------------------- */
+function renderCover(plan) {
+  const c = kdpCoverSpec(plan, paperChoice());
+  let h = "<table class='kv'>";
+  const row = function (k, v) { h += "<tr><th>" + k + "</th><td>" + v + "</td></tr>"; };
+  row("Full cover", "<b>" + c.fullIn[0].toFixed(3) + " × " + c.fullIn[1].toFixed(3) + " in</b> · " +
+    c.fullCm[0].toFixed(2) + " × " + c.fullCm[1].toFixed(2) + " cm · <b>" +
+    c.fullPx300[0] + " × " + c.fullPx300[1] + " px</b> at 300 dpi");
+  row("Spine", c.spineIn.toFixed(4) + " in / " + c.spineCm.toFixed(2) + " cm <span class='dim'>· " +
+    c.pages + " pages on " + c.paper + " paper</span>");
+  row("Spine text", c.spineTextAllowed
+    ? "allowed — keep it inside " + c.spineTextSafeIn.toFixed(3) + " in"
+    : "<span class='warnInline'>not allowed — KDP needs " + c.spineTextMinPages + "+ pages</span>");
+  row("Panels from the left", "back at " + c.backFromLeftIn.toFixed(3) + " in · spine at " +
+    c.spineFromLeftIn.toFixed(3) + " in · front at " + c.frontFromLeftIn.toFixed(3) + " in");
+  row("Bleed / safe", c.bleedIn + " in bleed on all four edges · keep text " + c.safeMarginIn +
+    " in inside the trim");
+  row("Barcode", c.barcode.wIn + " × " + c.barcode.hIn + " in on the back cover, " +
+    c.barcode.fromLeftIn.toFixed(3) + " in from the left and " + c.barcode.fromBottomIn.toFixed(2) +
+    " in up — keep artwork clear of it");
+  h += "</table>";
+  h += "<p class='dim small'>The template is a PDF at exactly this size with the trim, spine, safe areas " +
+    "and barcode zone drawn on it — drop it into Canva as an underlay. Worth checking one against " +
+    "<a href='https://kdp.amazon.com/cover-calculator' target='_blank' rel='noopener'>KDP's own calculator</a> " +
+    "at title setup; these follow their published formulas, but theirs is what KDP validates.</p>";
+  return h;
+}
+
+function downloadCover() {
+  const b = LIB[SELECTED];
+  if (!b) { setStatus($("#coverProg"), "Pick a book first.", "warn"); return; }
+  try {
+    const plan = kdpPlan(b.preset, b.puzzleCount);
+    const spec = kdpCoverSpec(plan, paperChoice());
+    const out = kdpBuildCoverTemplate(window.jspdf.jsPDF, window.KDP_FONTS, spec,
+      { title: $("#xTitle").value.trim() || b.title, bookId: SELECTED });
+    const name = "zaney-" + SELECTED + "-cover-" + spec.fullIn[0].toFixed(3) + "x" +
+      spec.fullIn[1].toFixed(3) + "in.pdf";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([out.bytes], { type: "application/pdf" }));
+    a.download = name; a.click();
+    setStatus($("#coverProg"), "<b>Done — " + esc(name) + "</b><br>Set your Canva canvas to " +
+      spec.fullPx300[0] + " × " + spec.fullPx300[1] + " px and place this underneath.", "ok");
+  } catch (e) {
+    setStatus($("#coverProg"), esc(e.message), "bad");
   }
 }
 
@@ -159,22 +231,54 @@ function addBandRow(difficulty, count) {
   fillDiffSelect(div.querySelector("select"), mode, difficulty);
   div.querySelector("select").addEventListener("change", updatePreview);
   div.querySelector("input").addEventListener("input", updatePreview);
+  div.querySelector("select").addEventListener("change", function () { autoSplit(); updatePreview(); });
   div.querySelector("button").addEventListener("click", function () {
     if (bandRows().length <= 1) return;
-    div.remove(); updatePreview();
+    div.remove(); autoSplit(); updatePreview();
   });
   updatePreview();
 }
 
+/* What the target field asks for, translated into puzzles. */
+function targetPuzzles() {
+  const n = parseInt($("#fTarget").value, 10);
+  if (!(n > 0)) return { count: 0 };
+  if ($("#fTargetMode").value === "puzzles") return { count: n };
+  try {
+    /* kdpPuzzlesForPages names the field puzzleCount; normalise it here so
+       every caller sees one shape. */
+    const r = kdpPuzzlesForPages(currentPresetId(), n);
+    return { count: r.puzzleCount, pages: r.pages, short: r.short };
+  } catch (e) { return { count: 0, error: e.message }; }
+}
+
 function readBands() {
   if ($("#fSingle").checked)
-    return [{ difficulty: $("#fDiff").value, count: parseInt($("#fCount").value, 10) || 0 }];
+    return [{ difficulty: $("#fDiff").value, count: targetPuzzles().count }];
   return bandRows().map(function (r) {
     return { difficulty: r.querySelector("select").value, count: parseInt(r.querySelector("input").value, 10) || 0 };
   });
 }
 
+/* Spread the target across whatever levels are listed. Called whenever the
+   target or the level list changes, so the split follows the book rather than
+   having to be worked out by hand. */
+function autoSplit() {
+  if ($("#fSingle").checked) return;
+  const rows = bandRows();
+  if (!rows.length) return;
+  const split = kdpSplitBands(targetPuzzles().count,
+    rows.map(function (r) { return r.querySelector("select").value; }));
+  rows.forEach(function (r, i) { r.querySelector("input").value = split[i].count; });
+}
+
 function updatePreview() {
+  const t = targetPuzzles();
+  $("#fFit").innerHTML = t.error ? "<span class='bad'>" + esc(t.error) + "</span>"
+    : t.count ? (t.count + " puzzles" + (t.pages ? " · " + t.pages + " pages" : "") +
+        (t.short ? " <span class='warnInline'>(the shortest KDP will take)</span>" : ""))
+    : "—";
+
   const bands = readBands();
   const total = kdpBandTotal(bands);
   const ranges = kdpBandRanges(bands);
@@ -187,7 +291,7 @@ function updatePreview() {
   let line = total + " puzzle" + (total === 1 ? "" : "s");
   try {
     const plan = kdpPlan(currentPresetId(), total);
-    const pr = kdpPricing(plan);
+    const pr = kdpPricing(plan, paperChoice());
     line += " → <b>" + plan.total + " pages</b> · spine " + pr.spineCm.toFixed(2) + " cm · " +
       "print " + money(pr.currencies.GBP.print, "GBP") + " / " + money(pr.currencies.USD.print, "USD");
   } catch (e) {
@@ -210,7 +314,7 @@ function syncAltOptions() {
 function applyAltLock() {
   const base = LIB[$("#fAlt").value];
   const locked = !!base;
-  ["fMode", "fDiff", "fCount", "fSeed", "fSingle", "fClimb"].forEach(function (id) { $("#" + id).disabled = locked; });
+  ["fMode", "fDiff", "fSeed", "fSingle", "fClimb", "fTarget", "fTargetMode"].forEach(function (id) { $("#" + id).disabled = locked; });
   bandRows().forEach(function (r) {
     r.querySelector("select").disabled = locked;
     r.querySelector("input").disabled = locked;
@@ -219,6 +323,8 @@ function applyAltLock() {
   if (locked) {
     $("#fMode").value = base.mode;
     setBands(kdpBands(base), base.mode);
+    $("#fTargetMode").value = "puzzles";
+    $("#fTarget").value = base.puzzleCount;
     $("#fSeed").value = base.seedStart;
     $("#editHint").textContent = "This will be the same puzzles as " + $("#fAlt").value +
       " in a different size — a second edition of one title. Pick a different trim or layout below.";
@@ -231,17 +337,9 @@ function applyAltLock() {
 
 function setBands(bands, mode) {
   $("#bands").innerHTML = "";
-  if (bands.length === 1) {
-    $("#fSingle").checked = true;
-    fillDiffSelect($("#fDiff"), mode, bands[0].difficulty);
-    $("#fCount").value = bands[0].count;
-    addBandRow(bands[0].difficulty, bands[0].count);
-  } else {
-    $("#fClimb").checked = true;
-    fillDiffSelect($("#fDiff"), mode, bands[0].difficulty);
-    $("#fCount").value = kdpBandTotal(bands);
-    for (const b of bands) addBandRow(b.difficulty, b.count);
-  }
+  fillDiffSelect($("#fDiff"), mode, bands[0].difficulty);
+  $(bands.length === 1 ? "#fSingle" : "#fClimb").checked = true;
+  for (const b of bands) addBandRow(b.difficulty, b.count);
   syncDiffMode();
 }
 
@@ -249,6 +347,15 @@ function syncDiffMode() {
   const climb = $("#fClimb").checked;
   $("#climbWrap").classList.toggle("hide", !climb);
   $("#singleWrap").classList.toggle("hide", climb);
+  if (climb) {
+    /* first time in, offer a sensible ladder rather than one lonely level */
+    if (bandRows().length < 2) {
+      const ds = kdpValidDifficulties($("#fMode").value);
+      $("#bands").innerHTML = "";
+      for (const d of ds.slice(0, 3)) addBandRow(d, 1);
+    }
+    autoSplit();
+  }
   updatePreview();
 }
 
@@ -270,7 +377,12 @@ function openEditor(id) {
   $("#fLayout").value = preset.layoutId;
   $("#fTitle").value = b ? b.title : "";
 
-  setBands(b ? kdpBands(b) : [{ difficulty: "hard", count: preset.defaultPuzzles }], $("#fMode").value);
+  const startBands = b ? kdpBands(b) : [{ difficulty: "hard", count: preset.defaultPuzzles }];
+  const startCount = kdpBandTotal(startBands);
+  $("#fTargetMode").value = "pages";
+  try { $("#fTarget").value = kdpPlan(currentPresetId(), startCount).total; }
+  catch (e) { $("#fTargetMode").value = "puzzles"; $("#fTarget").value = startCount; }
+  setBands(startBands, $("#fMode").value);
   syncAltOptions();
   $("#fAlt").value = b && b.altEditionOf ? b.altEditionOf : "";
   $("#fSeed").value = b ? b.seedStart : nextSeedStart();
@@ -337,7 +449,7 @@ function saveBook() {
    Costs readout
 --------------------------------------------------------------------------- */
 function renderReadout(plan, book) {
-  const pr = kdpPricing(plan), warns = kdpWarnings(plan);
+  const pr = kdpPricing(plan, paperChoice()), warns = kdpWarnings(plan);
   const P = plan.preset;
   let h = "";
   for (const w of warns) {
@@ -381,7 +493,7 @@ function renderReadout(plan, book) {
 }
 
 function wirePriceInputs(plan) {
-  const pr = kdpPricing(plan);
+  const pr = kdpPricing(plan, paperChoice());
   for (const cur of ["GBP", "USD"]) {
     const input = $("#p" + cur), out = $("#e" + cur);
     if (!input) continue;
@@ -527,7 +639,16 @@ function doExport() {
     }
     return dealPool(eng.src, book.mode, seq, book.seedStart, need, function (d, t) {
       if (d % 4 === 0 || d === t) setStatus(prog, "Dealing " + d + " of " + t + "…");
-    }).then(function (deck) { return { deck: deck, limit: limit }; });
+    }).then(function (deck) {
+      /* Overlapping ranges are refused by the ledger; this is the other half of
+         the promise — no two puzzles inside one book are the same either. */
+      const dupes = kdpFindDuplicates(deck);
+      if (dupes.length)
+        throw new Error("REPEATED PUZZLES. Puzzle " + dupes[0].repeat + " is identical to puzzle " +
+          dupes[0].first + (dupes.length > 1 ? ", and " + (dupes.length - 1) + " more pair(s)" : "") +
+          ". Nothing has been exported. This should be impossible — please report the book id and seed range.");
+      return { deck: deck, limit: limit };
+    });
   }).then(function (bundle) {
     const modeName = KDP_MODE_NAME[book.mode] || book.mode;
     const puzzles = bundle.deck.map(function (P, i) {
@@ -587,8 +708,9 @@ function doExport() {
     });
   }).then(function (r) {
     setStatus(prog, "<b>Done — " + esc(r.name) + "</b><br>" +
-      "Stripped " + r.out.report.stripped.length + " unembedded base-14 fonts, normalised " +
-      r.out.report.mediaBoxes + " MediaBoxes, pinned /ID to <code>" + r.out.report.id + "</code>." +
+      "No repeated puzzles. Stripped " + r.out.report.stripped.length +
+      " unembedded base-14 fonts, normalised " + r.out.report.mediaBoxes +
+      " MediaBoxes, pinned /ID to <code>" + r.out.report.id + "</code>." +
       ($("#xProof").checked ? "<br>Proof mode — KDP rejects interiors under " + KDP_RATES.minInteriorPages +
         " pages, so keep the proof at " + KDP_RATES.minInteriorPages + "+ if you want the upload to go through." : ""), "ok");
   }).catch(function (e) {
@@ -643,7 +765,9 @@ $("#btnAddBand").addEventListener("click", function () {
     const i = ds.indexOf(last.querySelector("select").value);
     nextDiff = ds[Math.min(i + 1, ds.length - 1)];
   }
-  addBandRow(nextDiff, 50);
+  addBandRow(nextDiff, 1);
+  autoSplit();
+  updatePreview();
 });
 $("#fMode").addEventListener("change", function () {
   const mode = $("#fMode").value;
@@ -651,10 +775,14 @@ $("#fMode").addEventListener("change", function () {
   bandRows().forEach(function (r) { fillDiffSelect(r.querySelector("select"), mode, r.querySelector("select").value); });
   updatePreview();
 });
-$("#fTrim").addEventListener("change", updatePreview);
-$("#fLayout").addEventListener("change", updatePreview);
+$("#fTrim").addEventListener("change", function () { autoSplit(); updatePreview(); });
+$("#fLayout").addEventListener("change", function () { autoSplit(); updatePreview(); });
 $("#fDiff").addEventListener("change", updatePreview);
-$("#fCount").addEventListener("input", updatePreview);
+$("#fTarget").addEventListener("input", function () { autoSplit(); updatePreview(); });
+$("#fTargetMode").addEventListener("change", function () { autoSplit(); updatePreview(); });
+$("#btnSplitEven").addEventListener("click", function () { autoSplit(); updatePreview(); });
+$("#xPaper").addEventListener("change", refresh);
+$("#btnCover").addEventListener("click", downloadCover);
 $("#fSingle").addEventListener("change", syncDiffMode);
 $("#fClimb").addEventListener("change", syncDiffMode);
 $("#fAlt").addEventListener("change", applyAltLock);

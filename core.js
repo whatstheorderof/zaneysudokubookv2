@@ -52,7 +52,13 @@ const KDP_RATES = {
     tierRate: { above: 0.60, below: 0.50 },
     tierThreshold: { USD: 9.99, GBP: 7.99 }   /* GBP "equivalent" is a guess */
   },
-  spinePerPageIn: 0.002252,                   /* white paper */
+  /* Spine thickness per page, by stock. A black-ink interior is white or
+     cream; the choice changes the spine, and therefore the whole cover. */
+  spinePerPageIn: 0.002252,                   /* white — default for callers that predate the paper option */
+  paper: { white: 0.002252, cream: 0.0025 },
+  coverBleedEachIn: 0.125,                    /* KDP wants 0.125in of bleed on all four outer edges */
+  spineTextMinPages: 79,                      /* below this KDP will not print spine text */
+  barcodeIn: { w: 2.0, h: 1.2, marginIn: 0.25 },
   coverBleedIn: 0.25,
   minInteriorPages: 24,
   maxInteriorPages: 828
@@ -300,11 +306,59 @@ function kdpPlan(presetId, puzzleCount){
 /* ---------------------------------------------------------------------------
    Pricing readout
 --------------------------------------------------------------------------- */
-function kdpSpineIn(pages){ return pages * KDP_RATES.spinePerPageIn; }
+function kdpSpineIn(pages, paper){
+  const per = (paper && KDP_RATES.paper[paper]) || KDP_RATES.spinePerPageIn;
+  return pages * per;
+}
 
-function kdpCoverIn(preset, pages){
-  const [w,h] = preset.trimIn, s = kdpSpineIn(pages), b = KDP_RATES.coverBleedIn;
+function kdpCoverIn(preset, pages, paper){
+  const [w,h] = preset.trimIn, s = kdpSpineIn(pages, paper), b = KDP_RATES.coverBleedIn;
   return { w: 2*w + s + b, h: h + b, spine: s };
+}
+
+/* ---------------------------------------------------------------------------
+   Full cover spec — the same numbers KDP's cover calculator returns, worked out
+   from the page count this exporter is actually going to produce:
+
+     https://kdp.amazon.com/cover-calculator
+
+   These follow KDP's published formulas, but their calculator is the thing KDP
+   itself validates against, so check one against it at title setup.
+--------------------------------------------------------------------------- */
+function kdpCoverSpec(plan, paper){
+  paper = (paper && KDP_RATES.paper[paper]) ? paper : "white";
+  const tw = plan.preset.trimIn[0], th = plan.preset.trimIn[1];
+  const bleed = KDP_RATES.coverBleedEachIn;
+  const spine = kdpSpineIn(plan.total, paper);
+  const W = 2*tw + spine + 2*bleed;
+  const H = th + 2*bleed;
+  const bc = KDP_RATES.barcodeIn;
+  return {
+    paper: paper,
+    pages: plan.total,
+    trimIn: [tw, th],
+    bleedIn: bleed,
+    spineIn: spine,
+    spineCm: spine * 2.54,
+    /* the canvas to set up in Canva */
+    fullIn: [W, H],
+    fullCm: [W*2.54, H*2.54],
+    fullPx300: [Math.round(W*300), Math.round(H*300)],
+    /* where the panels fall, measured from the left edge of that canvas */
+    backFromLeftIn: bleed,
+    spineFromLeftIn: bleed + tw,
+    frontFromLeftIn: bleed + tw + spine,
+    /* keep text this far inside every trimmed edge */
+    safeMarginIn: 0.25,
+    /* KDP prints the barcode over the lower right of the BACK cover */
+    barcode: { wIn: bc.w, hIn: bc.h,
+               fromLeftIn: bleed + tw - bc.w - bc.marginIn,
+               fromBottomIn: bleed + bc.marginIn },
+    spineTextAllowed: plan.total >= KDP_RATES.spineTextMinPages,
+    spineTextMinPages: KDP_RATES.spineTextMinPages,
+    /* KDP asks for 0.0625in of clearance either side of spine text */
+    spineTextSafeIn: Math.max(0, spine - 0.125)
+  };
 }
 
 function kdpPrintCost(category, pages, cur){
@@ -332,9 +386,9 @@ function kdpPriceLadder(cost){
   return [base, base + 2, base + 4];
 }
 
-function kdpPricing(plan){
+function kdpPricing(plan, paper){
   const P = plan.preset, pages = plan.total, cat = plan.category;
-  const out = { pages, category: cat, cover: kdpCoverIn(P, pages), currencies: {} };
+  const out = { pages, category: cat, paper: paper || "white", cover: kdpCoverIn(P, pages, paper), currencies: {} };
   out.spineIn = out.cover.spine;
   out.spineCm = out.spineIn * 2.54;
   for(const cur of ["USD","GBP"]){
@@ -353,6 +407,104 @@ function kdpPricing(plan){
     };
   }
   return out;
+}
+
+/* ---------------------------------------------------------------------------
+   Working backwards from a target length.
+
+   You normally know roughly how long the book should be — a 400-page brick, or
+   something that squeaks under the 110-page flat printing fee — and the puzzle
+   count falls out of that. Page count rises monotonically with puzzle count, so
+   this walks to the largest count that still fits.
+--------------------------------------------------------------------------- */
+function kdpPuzzlesForPages(presetId, targetPages){
+  presetId = kdpResolvePreset(presetId);
+  const P = KDP_PRESETS[presetId];
+  if(!P) throw new Error("Unknown preset "+presetId);
+
+  const perPuzzle = 1/P.puzzlesPerPage + 1/P.solsPerPage;   /* pages each puzzle adds */
+  let n = Math.max(1, Math.round((targetPages - 11) / perPuzzle));
+  const planOf = function(k){ try { return kdpPlan(presetId, k); } catch(e){ return null; } };
+
+  /* walk up while we still fit, then back off to the last that did */
+  let guard = 0;
+  while(guard++ < 5000){
+    const p = planOf(n + 1);
+    if(!p || p.total > targetPages) break;
+    n++;
+  }
+  guard = 0;
+  while(n > 1 && guard++ < 5000){
+    const p = planOf(n);
+    if(p && p.total <= targetPages) break;
+    n--;
+  }
+  const plan = planOf(n);
+  if(!plan){
+    /* target is below the shortest book KDP will accept — give the shortest legal one */
+    for(let k = 1; k < 5000; k++){
+      const p = planOf(k);
+      if(p) return { puzzleCount: k, pages: p.total, short: true };
+    }
+    throw new Error("No valid book exists at this size.");
+  }
+  return { puzzleCount: n, pages: plan.total, short: false };
+}
+
+/* Spread a total across levels as evenly as it goes, remainder to the earlier
+   bands so the book eases in rather than ending on an odd short stretch. */
+function kdpSplitBands(total, difficulties){
+  const k = difficulties.length;
+  if(k === 0) return [];
+  const base = Math.floor(total / k);
+  let rem = total - base*k;
+  return difficulties.map(function(d){
+    const extra = rem > 0 ? 1 : 0;
+    if(rem > 0) rem--;
+    return { difficulty: d, count: base + extra };
+  });
+}
+
+/* ---------------------------------------------------------------------------
+   Repeats.
+
+   Overlapping seed ranges are the obvious way to ship the same puzzle twice,
+   and kdpLedgerCheck refuses those. These cover the rest of it: an audit of the
+   whole library rather than one book at a time, and a fingerprint check over a
+   dealt deck so a repeat inside a single book cannot reach print either.
+--------------------------------------------------------------------------- */
+function kdpAuditLedger(books){
+  const problems = [];
+  for(const id in books){
+    if(!Object.prototype.hasOwnProperty.call(books,id)) continue;
+    try { kdpLedgerCheck(books, id); }
+    catch(e){ problems.push({ id: id, message: e.message }); }
+  }
+  return problems;
+}
+
+/* A puzzle is fully described by its solution grid plus which cells are given
+   plus its cages, so that is what identity means here. */
+function kdpFingerprint(P){
+  let f = "";
+  for(let i=0;i<81;i++) f += P.sol[i];
+  f += "|";
+  for(let i=0;i<81;i++) f += P.given[i] ? "1" : "0";
+  if(P.cages && P.cages.length){
+    f += "|";
+    for(const g of P.cages) f += g.sum + ":" + g.cells.join(".") + ";";
+  }
+  return f;
+}
+
+function kdpFindDuplicates(deck){
+  const seen = {}, dupes = [];
+  for(let i=0;i<deck.length;i++){
+    const f = kdpFingerprint(deck[i]);
+    if(seen[f] === undefined) seen[f] = i;
+    else dupes.push({ first: seen[f] + 1, repeat: i + 1 });
+  }
+  return dupes;
 }
 
 /* Warnings the exporter surfaces before it will deal anything. */
@@ -1230,6 +1382,114 @@ function kdpRegisterFonts(doc, fonts){
   doc.addFileToVFS("Inter-kdp-bold.ttf", fonts.bold);
   doc.addFont("Inter-kdp-bold.ttf", KDP_FONT_FAMILY, "bold");
   doc.setFont(KDP_FONT_FAMILY, "normal");
+}
+
+/* ---------------------------------------------------------------------------
+   Cover template.
+
+   A single page at the exact full-cover size with the trim, spine, safe areas
+   and the barcode keep-out drawn on it, to drop into Canva as an underlay so
+   the artwork lines up first time instead of after a rejection.
+--------------------------------------------------------------------------- */
+function kdpBuildCoverTemplate(jsPDFctor, fonts, spec, meta){
+  meta = meta || {};
+  const IN = KDP_IN;
+  const W = spec.fullIn[0]*IN, H = spec.fullIn[1]*IN;
+  const doc = new jsPDFctor({orientation: W >= H ? "landscape" : "portrait",
+                             unit:"pt", format:[W, H], compress:true});
+  kdpRegisterFonts(doc, fonts);
+
+  const bleed = spec.bleedIn*IN;
+  const tw = spec.trimIn[0]*IN, th = spec.trimIn[1]*IN;
+  const spine = spec.spineIn*IN;
+  const safe = spec.safeMarginIn*IN;
+  const spineX = spec.spineFromLeftIn*IN;
+  const frontX = spec.frontFromLeftIn*IN;
+
+  const label = function(text, x, y, size, grey, align){
+    doc.setFont(KDP_FONT_FAMILY,"normal");
+    doc.setFontSize(size);
+    doc.setTextColor(grey, grey, grey);
+    doc.text(text, x, y, align ? {align: align} : undefined);
+  };
+
+  /* everything outside the trim is bleed and will be cut off */
+  doc.setFillColor(246,238,238);
+  doc.rect(0, 0, W, bleed, "F");
+  doc.rect(0, H-bleed, W, bleed, "F");
+  doc.rect(0, 0, bleed, H, "F");
+  doc.rect(W-bleed, 0, bleed, H, "F");
+
+  /* trim */
+  doc.setDrawColor(150,60,60);
+  doc.setLineWidth(0.75);
+  doc.setLineDashPattern([4,3],0);
+  doc.rect(bleed, bleed, W-2*bleed, H-2*bleed);
+  doc.setLineDashPattern([],0);
+
+  /* spine */
+  doc.setDrawColor(40,90,160);
+  doc.setLineWidth(1);
+  doc.line(spineX, 0, spineX, H);
+  doc.line(frontX, 0, frontX, H);
+
+  /* safe areas, one per panel */
+  doc.setDrawColor(120,160,120);
+  doc.setLineWidth(0.6);
+  doc.setLineDashPattern([2,3],0);
+  doc.rect(bleed+safe, bleed+safe, tw-2*safe, th-2*safe);
+  doc.rect(frontX+safe, bleed+safe, tw-2*safe, th-2*safe);
+  doc.setLineDashPattern([],0);
+
+  /* barcode keep-out, on the back cover */
+  const bx = spec.barcode.fromLeftIn*IN;
+  const by = H - (spec.barcode.fromBottomIn*IN) - (spec.barcode.hIn*IN);
+  doc.setFillColor(232,232,236);
+  doc.rect(bx, by, spec.barcode.wIn*IN, spec.barcode.hIn*IN, "F");
+  label("BARCODE — keep clear", bx + (spec.barcode.wIn*IN)/2, by + (spec.barcode.hIn*IN)/2, 8, 110, "center");
+
+  /* panel names */
+  label("BACK COVER", bleed + tw/2, bleed + 26, 13, 150, "center");
+  label("FRONT COVER", frontX + tw/2, bleed + 26, 13, 150, "center");
+  if(spine > 16){
+    doc.setFont(KDP_FONT_FAMILY,"normal");
+    doc.setFontSize(9);
+    doc.setTextColor(150,150,150);
+    doc.text("SPINE", spineX + spine/2 + 3.5, H/2 + 18, {angle: 90});
+  }
+
+  /* the numbers, along the bottom inside the back cover's safe area */
+  const lines = [
+    (meta.title || "Cover template") + (meta.bookId ? "  ·  " + meta.bookId : ""),
+    spec.pages + " pages  ·  " + spec.paper + " paper  ·  trim " + spec.trimIn[0] + " × " + spec.trimIn[1] + " in",
+    "Full cover " + spec.fullIn[0].toFixed(3) + " × " + spec.fullIn[1].toFixed(3) + " in" +
+      "  (" + spec.fullCm[0].toFixed(2) + " × " + spec.fullCm[1].toFixed(2) + " cm" +
+      "  ·  " + spec.fullPx300[0] + " × " + spec.fullPx300[1] + " px at 300dpi)",
+    "Spine " + spec.spineIn.toFixed(4) + " in / " + spec.spineCm.toFixed(2) + " cm" +
+      (spec.spineTextAllowed
+        ? "  ·  spine text allowed, keep it within " + spec.spineTextSafeIn.toFixed(3) + " in"
+        : "  ·  NO spine text: KDP needs " + spec.spineTextMinPages + "+ pages"),
+    "Red dashes = trim, cut line.  Green dots = safe area, keep text inside.  Blue = spine folds.  Pink = bleed, gets cut off.",
+    "Check against kdp.amazon.com/cover-calculator at title setup."
+  ];
+  let y = bleed + safe + 42;
+  for(const t of lines){
+    label(t, bleed + safe + 4, y, 8, 110);
+    y += 11;
+  }
+
+  doc.setProperties({
+    title: (meta.title || "Cover template") + " — cover",
+    subject: (meta.bookId || "") + " · full cover " + spec.fullIn[0].toFixed(3) + "x" + spec.fullIn[1].toFixed(3) +
+             "in · spine " + spec.spineIn.toFixed(4) + "in · " + spec.pages + "pp " + spec.paper,
+    creator: "Zaney Books cover template"
+  });
+  doc.setCreationDate(new Date(KDP_FIXED_EPOCH));
+  const raw = new Uint8Array(doc.output("arraybuffer"));
+  return kdpFixup(raw, {
+    trimPt: [W, H],
+    seed: ["cover", meta.bookId||"", spec.pages, spec.paper, spec.fullIn.join("x")].join("|")
+  });
 }
 
 function kdpAbortMessage(plan, cfg, fit, where){

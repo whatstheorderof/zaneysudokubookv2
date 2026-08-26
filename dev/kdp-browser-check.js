@@ -20,7 +20,10 @@ const ROOT = path.dirname(__dirname);
 const BASE = process.env.KDP_URL || "http://127.0.0.1:8777/";
 
 (async () => {
-  const browser = await chromium.launch();
+  /* CHROME_PATH lets you point at a Chromium that is already on the machine,
+     rather than the exact build this Playwright version wants to download. */
+  const browser = await chromium.launch(
+    process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
   const ctx = await browser.newContext({ acceptDownloads: true });
   const page = await ctx.newPage();
   const errors = [], consoleErrors = [], badResponses = [];

@@ -128,6 +128,17 @@
         <div class="sm"><label for="fLayout">Puzzles per page</label><select id="fLayout"></select></div>
       </div>
 
+      <div class="row">
+        <div class="sm"><label for="fTargetMode">Fit to</label>
+          <select id="fTargetMode">
+            <option value="pages">A page count</option>
+            <option value="puzzles">A puzzle count</option>
+          </select></div>
+        <div class="sm"><label for="fTarget">Target</label><input id="fTarget" type="number" min="1"></div>
+        <div style="min-width:220px"><label>Which works out as</label>
+          <p class="dim small" id="fFit" style="margin:8px 0 0"></p></div>
+      </div>
+
       <label style="margin-top:4px">Difficulty</label>
       <div class="inline" style="margin-bottom:10px">
         <label><input type="radio" name="dmode" id="fSingle" checked> One level</label>
@@ -136,13 +147,13 @@
 
       <div id="singleWrap" class="row">
         <div class="sm"><label for="fDiff">Level</label><select id="fDiff"></select></div>
-        <div class="sm"><label for="fCount">Puzzles</label><input id="fCount" type="number" min="1"></div>
       </div>
 
       <div id="climbWrap" class="hide">
         <div id="bands"></div>
         <div class="inline">
           <button class="ghost small" id="btnAddBand">+ Add level</button>
+          <button class="ghost small" id="btnSplitEven">Split evenly</button>
           <span class="dim small" id="bandTotal"></span>
         </div>
       </div>
@@ -190,8 +201,22 @@
 
   <!-- ============================== COSTS ============================== -->
   <div class="card">
-    <h2>Page plan and costs</h2>
+    <h2><span>Page plan and costs</span>
+      <span class="inline"><label for="xPaper" style="font-weight:400;text-transform:none;letter-spacing:0">Paper</label>
+        <select id="xPaper" style="width:auto"><option value="white">White</option><option value="cream">Cream</option></select>
+      </span></h2>
     <div id="readout"></div>
+  </div>
+
+  <!-- ============================== COVER ============================== -->
+  <div class="card">
+    <h2><span>Cover</span>
+      <span class="inline">
+        <button class="ghost small" id="btnCover">Download cover template</button>
+        <a class="dim small" href="https://kdp.amazon.com/cover-calculator" target="_blank" rel="noopener">KDP cover calculator ↗</a>
+      </span></h2>
+    <div id="coverOut"></div>
+    <p class="status" id="coverProg"></p>
   </div>
 
   <p class="foot">Puzzles are dealt in your browser. Nothing is uploaded.</p>

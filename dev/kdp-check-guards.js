@@ -161,6 +161,133 @@ allows("a book with no bands behaves as one band of its difficulty", function ()
   return "5 puzzles, all hard";
 });
 
+console.log("\n=== target length ===");
+
+allows("a target page count works back to a puzzle count that fits", function () {
+  const cases = [["5.06x7.81/1up", 402, 336], ["8.5x11/2up", 110, 160], ["8.5x11/1up", 108, 84]];
+  const out = [];
+  for (const c of cases) {
+    const r = mod.kdpPuzzlesForPages(c[0], c[1]);
+    if (r.puzzleCount !== c[2])
+      throw new Error(c[0] + " @ " + c[1] + "pp gave " + r.puzzleCount + ", expected " + c[2]);
+    if (r.pages > c[1]) throw new Error(c[0] + " overshot the target");
+    out.push(c[1] + "pp -> " + r.puzzleCount + " puzzles");
+  }
+  return out.join(", ");
+});
+
+allows("it never overshoots, across every format and a range of targets", function () {
+  let n = 0;
+  for (const id of Object.keys(mod.KDP_PRESETS)) {
+    for (let target = 30; target <= 500; target += 7) {
+      const r = mod.kdpPuzzlesForPages(id, target);
+      const plan = mod.kdpPlan(id, r.puzzleCount);
+      if (plan.total !== r.pages) throw new Error(id + " reported the wrong page count");
+      if (!r.short && plan.total > target)
+        throw new Error(id + " @ " + target + " overshot: " + plan.total);
+      /* and one more puzzle really would not fit */
+      if (!r.short) {
+        const bigger = mod.kdpPlan(id, r.puzzleCount + 1);
+        if (bigger.total <= target)
+          throw new Error(id + " @ " + target + " left room for another puzzle");
+      }
+      n++;
+    }
+  }
+  return n + " targets checked across " + Object.keys(mod.KDP_PRESETS).length + " formats";
+});
+
+allows("a target below KDP's minimum returns the shortest legal book", function () {
+  const r = mod.kdpPuzzlesForPages("5.06x7.81/1up", 10);
+  if (!r.short) throw new Error("should have been flagged short");
+  if (r.pages < 24) throw new Error("returned an illegal " + r.pages + " pages");
+  return r.puzzleCount + " puzzles = " + r.pages + " pages";
+});
+
+allows("splitting a total across levels always adds back up", function () {
+  for (let total = 1; total <= 400; total++) {
+    for (let k = 1; k <= 5; k++) {
+      const ds = ["easy", "medium", "hard", "expert", "nightmare"].slice(0, k);
+      const bands = mod.kdpSplitBands(total, ds);
+      if (mod.kdpBandTotal(bands) !== total) throw new Error(total + "/" + k + " lost puzzles");
+      const counts = bands.map(function (b) { return b.count; });
+      if (Math.max.apply(null, counts) - Math.min.apply(null, counts) > 1)
+        throw new Error(total + "/" + k + " split unevenly: " + counts.join(","));
+    }
+  }
+  return "2000 splits, every one exact and even to within one puzzle";
+});
+
+console.log("\n=== repeats ===");
+
+allows("the audit reads the whole library, not one book", function () {
+  const clash = {
+    "ZS-A": { title: "A", mode: "killer", difficulty: "hard", preset: "5.06x7.81/1up",
+              seedStart: 20000, seedEnd: 20099, puzzleCount: 100 },
+    "ZS-B": { title: "B", mode: "killer", difficulty: "easy", preset: "6x9/1up",
+              seedStart: 20050, seedEnd: 20149, puzzleCount: 100 }
+  };
+  const problems = mod.kdpAuditLedger(clash);
+  if (problems.length !== 2) throw new Error("expected both books flagged, got " + problems.length);
+  if (mod.kdpAuditLedger({ "ZS-A": clash["ZS-A"] }).length !== 0) throw new Error("false positive on a clean library");
+  return "both sides of a clash reported";
+});
+
+allows("identical puzzles are detected by fingerprint", function () {
+  const mk = function (d) { return { sol: new Array(81).fill(d), given: new Array(81).fill(0), cages: [] }; };
+  if (mod.kdpFindDuplicates([mk(1), mk(2), mk(3)]).length !== 0) throw new Error("false positive");
+  const d = mod.kdpFindDuplicates([mk(1), mk(2), mk(1)]);
+  if (d.length !== 1 || d[0].first !== 1 || d[0].repeat !== 3) throw new Error(JSON.stringify(d));
+  return "clean decks pass, repeats are located by puzzle number";
+});
+
+allows("the same seed at a different level is a different puzzle", function () {
+  const a = H.dealOne("killer", "easy", 55000);
+  const b = H.dealOne("killer", "hard", 55000);
+  if (mod.kdpFingerprint(a) === mod.kdpFingerprint(b))
+    throw new Error("seed 55000 gave the same puzzle at easy and hard");
+  return "seed 55000: easy and hard are unrelated grids";
+});
+
+allows("a real 200-puzzle deal contains no repeats", function () {
+  const deck = [];
+  for (let i = 0; i < 200; i++) deck.push(H.dealOne("classic", "medium", 60000 + i));
+  const d = mod.kdpFindDuplicates(deck);
+  if (d.length) throw new Error("puzzle " + d[0].repeat + " repeats " + d[0].first);
+  return "200 consecutive seeds, all distinct";
+});
+
+console.log("\n=== cover ===");
+
+allows("the cover spec follows KDP's formulas", function () {
+  const plan = mod.kdpPlan("5.06x7.81/1up", 336);
+  const c = mod.kdpCoverSpec(plan, "white");
+  const spine = 402 * 0.002252;
+  const wantW = 2 * 5.06 + spine + 0.25, wantH = 7.81 + 0.25;
+  if (Math.abs(c.fullIn[0] - wantW) > 1e-9) throw new Error("width " + c.fullIn[0] + " want " + wantW);
+  if (Math.abs(c.fullIn[1] - wantH) > 1e-9) throw new Error("height " + c.fullIn[1] + " want " + wantH);
+  if (Math.abs(c.spineIn - spine) > 1e-9) throw new Error("spine " + c.spineIn);
+  if (Math.abs(c.frontFromLeftIn - (0.125 + 5.06 + spine)) > 1e-9) throw new Error("front panel misplaced");
+  return c.fullIn[0].toFixed(3) + " x " + c.fullIn[1].toFixed(3) + " in, spine " + c.spineIn.toFixed(4) + " in";
+});
+
+allows("cream paper gives a thicker spine and a wider cover", function () {
+  const plan = mod.kdpPlan("5.06x7.81/1up", 336);
+  const w = mod.kdpCoverSpec(plan, "white"), c = mod.kdpCoverSpec(plan, "cream");
+  if (!(c.spineIn > w.spineIn)) throw new Error("cream is not thicker");
+  if (Math.abs((c.fullIn[0] - w.fullIn[0]) - (c.spineIn - w.spineIn)) > 1e-9)
+    throw new Error("the extra spine did not reach the cover width");
+  return "white " + w.spineIn.toFixed(4) + " in vs cream " + c.spineIn.toFixed(4) + " in";
+});
+
+allows("a short book is told it cannot have spine text", function () {
+  const thin = mod.kdpCoverSpec(mod.kdpPlan("8.5x11/1up", 20), "white");
+  const thick = mod.kdpCoverSpec(mod.kdpPlan("5.06x7.81/1up", 336), "white");
+  if (thin.spineTextAllowed) throw new Error("a " + thin.pages + "-page book should not allow spine text");
+  if (!thick.spineTextAllowed) throw new Error("a " + thick.pages + "-page book should");
+  return thin.pages + "pp no, " + thick.pages + "pp yes";
+});
+
 console.log("\n=== trim sizes ===");
 
 allows("every trim x layout combination plans and prices", function () {

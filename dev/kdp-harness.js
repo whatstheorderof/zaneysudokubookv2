@@ -35,7 +35,9 @@ const EXPORTS = [
   "kdpPlan","kdpPricing","kdpWarnings","kdpLiveArea","kdpTrimPt","kdpTrimCategory","kdpGutterIn",
   "kdpAssembler","kdpDefaultFront","kdpLedgerCheck","kdpSeriesList","kdpFixup","kdpFitGrid",
   "kdpUnsupportedChars","kdpCollectText","kdpBands","kdpBandSequence","kdpBandRanges","kdpBandTotal",
-  "kdpResolvePreset","KDP_TRIMS","KDP_LAYOUTS","kdpValidDifficulties"
+  "kdpResolvePreset","KDP_TRIMS","KDP_LAYOUTS","kdpValidDifficulties",
+  "kdpPuzzlesForPages","kdpSplitBands","kdpAuditLedger","kdpFingerprint","kdpFindDuplicates",
+  "kdpCoverSpec","kdpBuildCoverTemplate","kdpSpineIn"
 ];
 
 const mod = new Function(

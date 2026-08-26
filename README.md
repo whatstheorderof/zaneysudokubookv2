@@ -34,9 +34,12 @@ python3 -m http.server 8777      # then open http://localhost:8777/
 **Library** lists your books. Click one to select it; the costs panel updates as
 you go.
 
-**+ New book** — title, puzzle type, trim size, how many puzzles fit on a page,
-and the difficulty. A seed range clear of everything else is picked for you, and
-the editor shows the page count and print cost before you save.
+**+ New book** — title, puzzle type, trim size, puzzles per page, then **the
+length you want**. Say "402 pages" and it works back to 336 puzzles; say "110
+pages" on 8.5 × 11 two-up and it gives you 160, right on the flat-fee ceiling.
+Switch **Fit to** if you would rather name a puzzle count directly. A seed range
+clear of everything else is picked for you, and the page count, spine and print
+cost are shown before you save.
 
 ### Trim sizes
 
@@ -58,9 +61,11 @@ Adding another size is one row in `KDP_TRIMS` in `core.js`. Nothing else changes
 
 ### Books that get harder as they go
 
-Pick **Gets harder as it goes** and set as many levels as you like — say 100
-easy, 120 medium, 116 hard. The editor shows which puzzle numbers each level
-covers and the running total.
+Pick **Gets harder as it goes** and the target is **split across the levels for
+you** — 402 pages of killer becomes 112 easy, 112 medium, 112 hard, with the
+puzzle numbers each level covers shown beside it. Add or remove levels and it
+re-splits; change the target and it re-splits. Override any count by typing over
+it, and **Split evenly** puts it back.
 
 The book then climbs: puzzle 1 is easy, puzzle 336 is hard. Every puzzle is
 labelled with its level at the top of its page, the running head along the top
@@ -91,6 +96,45 @@ Every interior contains, in order: half title, copyright, a two-page how-to-play
 with the rules, a page about the difficulty, the puzzles with page numbers from
 the first one, a Solutions divider on a right-hand page, every solution, and a
 "more in the series" page.
+
+## No repeated puzzles
+
+Repeats across your own catalogue get flagged by Amazon and noticed by readers,
+so this is enforced in three places:
+
+* **Across the library.** Every render audits all books against each other, not
+  just the one selected, and says so in a green banner. An overlapping seed
+  range is refused with the clash named.
+* **Inside a book.** After dealing and before a single page is composed, every
+  puzzle is fingerprinted by its solution grid, its givens and its cages. If two
+  match, the export stops.
+* **In the tests.** A real 200-puzzle deal is swept for duplicates, and both
+  reference books are checked end to end on every run.
+
+The one deliberate exception is a second edition — "Same puzzles as" under
+Advanced — which reuses a book's exact range in a different size on purpose.
+
+Note that the same seed at a different difficulty is a *different puzzle*: the
+generator hashes difficulty into the seed. The ledger still refuses overlapping
+ranges regardless, which is the conservative call.
+
+## Cover
+
+The **Cover** panel gives the same numbers as
+[KDP's cover calculator](https://kdp.amazon.com/cover-calculator), worked out
+from the page count this exporter is actually going to produce: full canvas in
+inches, centimetres and pixels at 300 dpi, spine width, where the back, spine
+and front panels fall, the bleed and safe margins, and the barcode keep-out.
+
+Paper stock is a dropdown, because cream is thicker than white and that changes
+the spine and so the whole cover.
+
+**Download cover template** gives a PDF at exactly the full-cover size with the
+trim, spine folds, safe areas and barcode zone drawn on it — set your Canva
+canvas to the pixel size shown and drop the template underneath as a guide.
+
+These follow KDP's published formulas, but their calculator is what KDP itself
+validates against, so check one against it at title setup.
 
 ## Where the library lives
 
@@ -141,11 +185,12 @@ python3 dev/sync-engine.py       --from ../zaneysudoku/index.html   # re-vendor
 cd dev && npm install && npm test
 ```
 
-135 checks: pagination and refusal guards, the page in jsdom, structural PDF
+162 checks: pagination and refusal guards, the page in jsdom, structural PDF
 verification including a bounds check of every drawing call against the mirrored
 live area, and the site's own solver run over a sample of printed puzzles.
 Preset A takes a few minutes because 336 killer grids have to be dealt.
 
 `node dev/kdp-browser-check.js` additionally drives the real page in Chromium and
 asserts the downloaded PDF is byte-identical to the one Node builds. It needs
-`npm i -D playwright` and a server running on 8777.
+`npm i -D playwright` and a server running on 8777; set `CHROME_PATH` to use a
+Chromium already on the machine.

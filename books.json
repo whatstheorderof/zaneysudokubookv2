@@ -37,15 +37,15 @@
     "bands": [
       {
         "difficulty": "easy",
-        "count": 100
+        "count": 112
       },
       {
         "difficulty": "medium",
-        "count": 120
+        "count": 112
       },
       {
         "difficulty": "hard",
-        "count": 116
+        "count": 112
       }
     ]
   },
