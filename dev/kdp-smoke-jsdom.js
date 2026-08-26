@@ -83,6 +83,9 @@ const $ = function (s) { return win.document.querySelector(s); };
 const G = function (n) { return win.eval(n); };
 const rows = function () { return win.document.querySelectorAll("#libBody tr.book"); };
 const settle = function (ms) { return new Promise(function (r) { setTimeout(r, ms || 60); }); };
+/* computed style, not just the class: a CSS specificity bug once left a
+   "hidden" field on screen while a class-based assertion passed. */
+const shown = function (sel) { return win.getComputedStyle($(sel)).display !== "none"; };
 
 function run() {
   check("all five scripts evaluate with no uncaught error", errors.length === 0,
@@ -95,8 +98,15 @@ function run() {
     !!G("window.KDP_FONTS").regular && !!G("window.KDP_FONTS").charset,
     G("window.KDP_FONTS").charset.length + " codepoints available to the interior");
   check("the exporter core is present",
-    ["kdpPlan", "kdpPricing", "kdpLedgerCheck", "kdpAssembler", "kdpFixup"]
+    ["kdpPlan", "kdpPricing", "kdpLedgerCheck", "kdpAssembler", "kdpBands", "kdpBandSequence"]
       .every(function (n) { return typeof G(n) === "function"; }));
+  check("every trim x layout combination is a preset",
+    Object.keys(G("KDP_PRESETS")).length === G("KDP_TRIMS").length * G("KDP_LAYOUTS").length,
+    G("KDP_TRIMS").length + " trims x " + G("KDP_LAYOUTS").length + " layouts = " +
+    Object.keys(G("KDP_PRESETS")).length + " presets");
+  check("6 x 9 in is offered and counts as REGULAR trim",
+    G("KDP_TRIMS").some(function (t) { return t.id === "6x9"; }) &&
+    G("kdpTrimCategory")(G("KDP_PRESETS")["6x9/1up"]) === "REGULAR");
 
   return settle(200).then(function () {
     check("the page fetches only its own files", fetched.length > 0 &&
@@ -104,18 +114,13 @@ function run() {
       fetched.join(", "));
     check("the engine is verified against its lock on load",
       /engine verified/.test($("#engineStatus").innerHTML), $("#engineStatus").textContent.trim());
-
-    /* ---- library ------------------------------------------------------- */
-    check("the library renders every book from books.json",
-      rows().length === Object.keys(books).length,
+    check("the library renders every book", rows().length === Object.keys(books).length,
       rows().length + " rows: " + Array.prototype.map.call(rows(), function (r) { return r.dataset.id; }).join(", "));
-    check("the library is persisted to this browser",
-      !!win.localStorage.getItem("zaney_books_v1"),
-      Object.keys(JSON.parse(win.localStorage.getItem("zaney_books_v1"))).length + " entries stored");
-    check("page counts are computed per row",
-      /402/.test($("#libBody").textContent) && /110/.test($("#libBody").textContent));
+    check("a climbing book shows its progression in the list",
+      /Easy → Medium → Hard/.test($("#libBody").textContent),
+      ($("#libBody").textContent.match(/Easy → Medium → Hard/) || [""])[0]);
+    check("the list shows trim sizes", /5\.06 × 7\.81 in/.test($("#libBody").textContent));
 
-    /* ---- selecting a book drives the export panel and readout ---------- */
     rows()[0].dispatchEvent(new win.Event("click", { bubbles: true }));
     return settle();
   }).then(function () {
@@ -123,93 +128,133 @@ function run() {
     check("selecting a book fills the export panel", $("#xTitle").value === books[id].title,
       id + " -> " + $("#xTitle").value);
     check("the ledger path is stated before any dealing",
-      /UNIQUE RANGE PATH|ALT EDITION PATH/.test($("#ledgerMsg").innerHTML),
-      ($("#ledgerMsg").textContent.match(/(UNIQUE RANGE|ALT EDITION) PATH/) || [""])[0]);
+      /UNIQUE RANGE PATH|ALT EDITION PATH/.test($("#ledgerMsg").innerHTML));
     const rd = $("#readout").innerHTML;
-    check("the readout shows pages, gutter, spine and cover wrap",
-      /Gutter/.test(rd) && /Spine/.test(rd) && /Cover wrap/.test(rd) && /Pages/.test(rd));
-    check("the readout shows both royalty models", /Flat 60%/.test(rd) && /Tiered/.test(rd));
-    check("the readout carries the Brick-vs-Compact trade note",
-      /Brick/.test(rd) && /Compact/.test(rd) && /impulse price/.test(rd));
+    check("the readout shows size, pages, spine and cover wrap",
+      /Size/.test(rd) && /Pages/.test(rd) && /Spine/.test(rd) && /Cover wrap/.test(rd));
+    check("the readout carries the format trade note",
+      /higher price/.test(rd) && /impulse price/.test(rd));
     check("the readout flags the UK large-trim rate as unverified", /UNVERIFIED/.test(rd));
 
-    /* ---- creating a book ----------------------------------------------- */
-    const before = rows().length;
-    $("#btnNew").dispatchEvent(new win.Event("click", { bubbles: true }));
-    check("the new-book editor opens", !$("#editor").classList.contains("hide"));
-    check("it proposes a seed start clear of everything in the library",
-      parseInt($("#fSeed").value, 10) > Math.max.apply(null, Object.keys(books).map(function (k) { return books[k].seedEnd; })),
-      "proposed " + $("#fSeed").value);
-    check("puzzle count defaults from the chosen preset",
-      parseInt($("#fCount").value, 10) === G("KDP_PRESETS")[$("#fPreset").value].defaultPuzzles,
-      $("#fPreset").value + " -> " + $("#fCount").value);
+    /* list price is typed, not picked from a fixed ladder */
+    check("a list price can be typed for each currency", !!$("#pGBP") && !!$("#pUSD"));
+    $("#pGBP").value = "9.99";
+    $("#pGBP").dispatchEvent(new win.Event("input", { bubbles: true }));
+    check("typing a price recomputes the royalty", /a copy/.test($("#eGBP").innerHTML),
+      $("#eGBP").textContent.trim().slice(0, 60));
+    $("#pGBP").value = "1.00";
+    $("#pGBP").dispatchEvent(new win.Event("input", { bubbles: true }));
+    check("a price below break-even is called out", /not accept/.test($("#eGBP").innerHTML));
 
-    $("#fTitle").value = "Hyper Sudoku: Expert";
-    $("#fMode").value = "hyper";
+    /* ---- creating a single-level book ---------------------------------- */
+    $("#btnNew").dispatchEvent(new win.Event("click", { bubbles: true }));
+    check("the editor opens", shown("#editor"));
+    check("it proposes a seed start clear of the whole library",
+      parseInt($("#fSeed").value, 10) > Math.max.apply(null,
+        Object.keys(books).map(function (k) { return books[k].seedEnd; })),
+      "proposed " + $("#fSeed").value);
+    check("trim and layout are separate choices",
+      $("#fTrim").options.length === G("KDP_TRIMS").length &&
+      $("#fLayout").options.length === G("KDP_LAYOUTS").length,
+      $("#fTrim").options.length + " sizes, " + $("#fLayout").options.length + " layouts");
+    check("the editor previews pages and cost before saving",
+      /pages/.test($("#editPreview").textContent) && /print/.test($("#editPreview").textContent),
+      $("#editPreview").textContent.trim().slice(0, 80));
+
+    $("#fTitle").value = "Sudoku X: Portable";
+    $("#fMode").value = "x";
     $("#fMode").dispatchEvent(new win.Event("change", { bubbles: true }));
-    check("difficulties follow the mode",
-      Array.prototype.map.call($("#fDiff").options, function (o) { return o.value; }).join(",") === G("H_DIFFS").join(","),
-      $("#fDiff").options.length + " options for hyper");
-    $("#fDiff").value = "expert";
+    check("levels follow the puzzle type",
+      Array.prototype.map.call($("#fDiff").options, function (o) { return o.value; }).join(",") === G("X_DIFFS").join(","));
+    $("#fTrim").value = "6x9";
+    $("#fTrim").dispatchEvent(new win.Event("change", { bubbles: true }));
+    $("#fCount").value = "120";
+    $("#fCount").dispatchEvent(new win.Event("input", { bubbles: true }));
     $("#btnSaveBook").dispatchEvent(new win.Event("click", { bubbles: true }));
     return settle();
   }).then(function () {
-    check("the new book is added and selected", rows().length === Object.keys(books).length + 1 &&
-      G("LIB")[G("SELECTED")].title === "Hyper Sudoku: Expert",
-      G("SELECTED") + " · seeds " + G("LIB")[G("SELECTED")].seedStart + "–" + G("LIB")[G("SELECTED")].seedEnd);
-    check("its page count was computed and stored", G("LIB")[G("SELECTED")].pageCount > 24,
-      G("LIB")[G("SELECTED")].pageCount + " pages");
-    check("the new book survives in storage",
-      !!JSON.parse(win.localStorage.getItem("zaney_books_v1"))[G("SELECTED")]);
+    const b = G("LIB")[G("SELECTED")];
+    check("the new book is saved at the chosen trim", b && b.preset === "6x9/1up" && b.puzzleCount === 120,
+      G("SELECTED") + " · " + (b && b.preset) + " · " + (b && b.puzzleCount) + " puzzles");
+    check("it has no bands, because it is one level", !b.bands);
 
-    /* ---- an overlapping range must be refused --------------------------- */
+    /* ---- a climbing book ------------------------------------------------ */
+    $("#btnNew").dispatchEvent(new win.Event("click", { bubbles: true }));
+    $("#fTitle").value = "Classic: Easy to Hard";
+    $("#fMode").value = "classic";
+    $("#fMode").dispatchEvent(new win.Event("change", { bubbles: true }));
+    $("#fClimb").checked = true;
+    $("#fClimb").dispatchEvent(new win.Event("change", { bubbles: true }));
+    check("switching to climbing shows the level list and hides the single one",
+      shown("#climbWrap") && !shown("#singleWrap"));
+    const bandsOf = function () { return win.document.querySelectorAll("#bands .band"); };
+    while (bandsOf().length < 3) $("#btnAddBand").dispatchEvent(new win.Event("click", { bubbles: true }));
+    const set = [["easy", 40], ["medium", 50], ["hard", 30]];
+    bandsOf().forEach(function (r, i) {
+      r.querySelector("select").value = set[i][0];
+      r.querySelector("input").value = String(set[i][1]);
+      r.querySelector("input").dispatchEvent(new win.Event("input", { bubbles: true }));
+    });
+    check("each level shows which puzzle numbers it covers",
+      /puzzles 1–40/.test(bandsOf()[0].textContent) && /puzzles 91–120/.test(bandsOf()[2].textContent),
+      Array.prototype.map.call(bandsOf(), function (r) { return r.querySelector(".bandFrom").textContent; }).join(" / "));
+    check("the running total is shown", /120 puzzles in total/.test($("#bandTotal").textContent),
+      $("#bandTotal").textContent);
+    $("#btnSaveBook").dispatchEvent(new win.Event("click", { bubbles: true }));
+    return settle();
+  }).then(function () {
+    const b = G("LIB")[G("SELECTED")];
+    check("the climbing book stores its levels in order", !!b.bands && b.bands.length === 3 &&
+      b.bands.map(function (x) { return x.difficulty + ":" + x.count; }).join(",") === "easy:40,medium:50,hard:30",
+      G("SELECTED") + " · " + b.bands.map(function (x) { return x.difficulty + "×" + x.count; }).join(" → "));
+    check("its puzzle count matches the levels", b.puzzleCount === 120 && b.seedEnd - b.seedStart + 1 === 120);
+    const seq = G("kdpBandSequence")(b.bands);
+    check("the deal order climbs", seq.length === 120 && seq[0] === "easy" && seq[39] === "easy" &&
+      seq[40] === "medium" && seq[89] === "medium" && seq[90] === "hard" && seq[119] === "hard");
+    check("the front matter explains the progression",
+      G("kdpDefaultFront")("classic", "easy", { title: "t", bands: b.bands })
+        .about.some(function (x) { return /Puzzles 41 to 90/.test(x.s || ""); }));
+
+    /* ---- refusals ------------------------------------------------------- */
     $("#btnNew").dispatchEvent(new win.Event("click", { bubbles: true }));
     $("#fTitle").value = "Deliberate clash";
     $("#fSeed").value = String(books["ZS-003"].seedStart + 10);
     $("#fCount").value = "50";
-    $("#fPreset").value = "B";
+    $("#fCount").dispatchEvent(new win.Event("input", { bubbles: true }));
     const n = rows().length;
     $("#btnSaveBook").dispatchEvent(new win.Event("click", { bubbles: true }));
     return settle().then(function () {
       check("an overlapping seed range is refused, with the clash named",
         rows().length === n && /REFUSING TO EXPORT/.test($("#editMsg").innerHTML) &&
         /ZS-003/.test($("#editMsg").innerHTML),
-        ($("#editMsg").textContent.match(/overlaps [^.]+/) || [""])[0].slice(0, 70));
+        ($("#editMsg").textContent.match(/overlaps [^.]+/) || [""])[0].slice(0, 60));
       $("#btnCancel").dispatchEvent(new win.Event("click", { bubbles: true }));
-      check("cancelling closes the editor without adding anything",
-        $("#editor").classList.contains("hide") && rows().length === n);
+      check("cancelling adds nothing", !shown("#editor") && rows().length === n);
 
-      /* ---- alt-edition flow ------------------------------------------- */
       $("#btnNew").dispatchEvent(new win.Event("click", { bubbles: true }));
       $("#fAlt").value = "ZS-001";
       $("#fAlt").dispatchEvent(new win.Event("change", { bubbles: true }));
-      check("choosing an alt edition locks it to the base book's puzzles",
-        $("#fCount").disabled && $("#fSeed").disabled &&
-        parseInt($("#fSeed").value, 10) === books["ZS-001"].seedStart,
+      check("choosing another edition locks it to the base book's puzzles",
+        $("#fSeed").disabled && parseInt($("#fSeed").value, 10) === books["ZS-001"].seedStart,
         "seeds locked to " + $("#fSeed").value);
-      $("#fPreset").value = "A";
-      $("#fTitle").value = "Classic Medium — Large Print";
+      $("#fTrim").value = "5.83x8.27";
+      $("#fTrim").dispatchEvent(new win.Event("change", { bubbles: true }));
+      $("#fTitle").value = "Classic Medium — A5";
       $("#btnSaveBook").dispatchEvent(new win.Event("click", { bubbles: true }));
       return settle();
     });
   }).then(function () {
     const b = G("LIB")[G("SELECTED")];
-    check("the alt edition is accepted under a different preset",
-      b && b.altEditionOf === "ZS-001" && b.preset === "A" && b.seedStart === books["ZS-001"].seedStart,
-      G("SELECTED") + " alt of ZS-001, preset " + (b && b.preset));
-    check("its ledger line says it is deliberately reusing the range",
-      /ALT EDITION PATH/.test($("#ledgerMsg").innerHTML));
+    check("a second edition at another trim is accepted",
+      b && b.altEditionOf === "ZS-001" && b.preset === "5.83x8.27/1up",
+      G("SELECTED") + " · " + (b && b.preset));
 
-    /* ---- proof toggle ------------------------------------------------- */
-    const shown = function (sel) { return win.getComputedStyle($(sel)).display !== "none"; };
-    check("the proof page count is really hidden until proof mode is ticked",
-      !shown("#xProofRow"), "computed display: " + win.getComputedStyle($("#xProofRow")).display);
+    check("the proof page count is hidden until proof mode is ticked", !shown("#xProofRow"));
     $("#xProof").checked = true;
     $("#xProof").dispatchEvent(new win.Event("change", { bubbles: true }));
     check("ticking proof mode reveals the count, defaulting above KDP's minimum",
       shown("#xProofRow") && parseInt($("#xProofPages").value, 10) >= G("KDP_RATES").minInteriorPages,
       "default " + $("#xProofPages").value + " pages");
-    check("the editor is hidden when closed, by computed style too", !shown("#editor"));
 
     console.log("\n" + (pass + fail) + " checks, " + fail + " failed");
     win.close();

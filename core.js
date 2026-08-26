@@ -59,37 +59,54 @@ const KDP_RATES = {
 };
 
 /* ---------------------------------------------------------------------------
-   PRESETS. Add a fourth by adding an object here.
+   TRIM SIZES.
+
+   KDP's smallest paperback trim is 5 x 8 in, so the 4 x 6 "pocket" size you see
+   on other publishers' books is not available there — the nearest thing is A5.
+
+   Category is derived, never declared: REGULAR is width <= 6.12in AND height
+   <= 9in, everything else is LARGE, and that single fact drives printing cost.
 --------------------------------------------------------------------------- */
-const KDP_PRESETS = {
-  A: {
-    id: "A", name: "Brick", blurb: "flagship volumes",
-    trimIn: [5.06, 7.81],
-    puzzlesPerPage: 1, puzzleCols: 1, puzzleRows: 1,
-    solsPerPage: 6,    solCols: 2,    solRows: 3,
-    defaultPuzzles: 336,
-    flatFeeTarget: false,   /* a Brick is always past the flat-fee tier — that is the format */
-    pricePoints: { GBP: [10.99, 12.99, 14.99], USD: [12.99, 14.99, 16.99] }
-  },
-  B: {
-    id: "B", name: "Compact", blurb: "short-run volume SKUs",
-    trimIn: [8.5, 11],
-    puzzlesPerPage: 2, puzzleCols: 1, puzzleRows: 2,
-    solsPerPage: 8,    solCols: 2,    solRows: 4,
-    defaultPuzzles: 160,
-    flatFeeTarget: true,    /* staying under the flat-fee ceiling is the whole point */
-    pricePoints: { GBP: [7.99, 9.99, 11.99], USD: [9.99, 11.99, 13.99] }
-  },
-  C: {
-    id: "C", name: "Large Print", blurb: "accessibility SKUs, own listing",
-    trimIn: [8.5, 11],
-    puzzlesPerPage: 1, puzzleCols: 1, puzzleRows: 1,
-    solsPerPage: 6,    solCols: 2,    solRows: 3,
-    defaultPuzzles: 84,
-    flatFeeTarget: true,
-    pricePoints: { GBP: [8.99, 9.99, 11.99], USD: [10.99, 12.99, 14.99] }
+const KDP_TRIMS = [
+  { id: "5.06x7.81", name: "Brick",     wIn: 5.06, hIn: 7.81, note: "matches the UK Su Doku title you are benchmarking" },
+  { id: "5.83x8.27", name: "A5 Travel", wIn: 5.83, hIn: 8.27, note: "commuter size" },
+  { id: "6x9",       name: "Portable",  wIn: 6,    hIn: 9,    note: "the middle ground; still REGULAR trim, only just" },
+  { id: "8.5x11",    name: "Standard",  wIn: 8.5,  hIn: 11,   note: "the usual puzzle-book size, and what large print wants" }
+];
+
+/* How many puzzles go on a page, and how the solutions pack at the back. */
+const KDP_LAYOUTS = [
+  { id: "1up", name: "1 per page",  puzzlesPerPage: 1, puzzleCols: 1, puzzleRows: 1, solsPerPage: 6, solCols: 2, solRows: 3 },
+  { id: "2up", name: "2 per page",  puzzlesPerPage: 2, puzzleCols: 1, puzzleRows: 2, solsPerPage: 8, solCols: 2, solRows: 4 }
+];
+
+/* Every trim x layout combination is a preset. Adding a trim size or a layout
+   adds a row to one of the tables above; nothing else changes. */
+const KDP_PRESETS = (function () {
+  const out = {};
+  for (const t of KDP_TRIMS) {
+    for (const L of KDP_LAYOUTS) {
+      const id = t.id + "/" + L.id;
+      out[id] = {
+        id: id,
+        trimId: t.id, layoutId: L.id,
+        name: t.name + ", " + L.name,
+        blurb: t.note,
+        trimIn: [t.wIn, t.hIn],
+        puzzlesPerPage: L.puzzlesPerPage, puzzleCols: L.puzzleCols, puzzleRows: L.puzzleRows,
+        solsPerPage: L.solsPerPage, solCols: L.solCols, solRows: L.solRows,
+        defaultPuzzles: L.puzzlesPerPage === 2 ? 160 : (t.id === "8.5x11" ? 84 : 336)
+      };
+    }
   }
-};
+  return out;
+})();
+
+/* The three formats this started with, so an older books.json still loads. */
+const KDP_PRESET_ALIASES = { A: "5.06x7.81/1up", B: "8.5x11/2up", C: "8.5x11/1up" };
+function kdpResolvePreset(id) {
+  return KDP_PRESETS[id] ? id : (KDP_PRESET_ALIASES[id] || id);
+}
 
 /* Gutter widens with the block; the tier depends on the FINAL page count, so
    pagination has to be settled before any layout happens. */
@@ -162,9 +179,61 @@ function kdpLiveArea(preset, pageNo, gutterIn){
 }
 
 /* ---------------------------------------------------------------------------
+   Difficulty bands.
+
+   A book can climb: the first stretch easy, then medium, then hard. bands is
+   [{difficulty, count}, ...] summing to puzzleCount. A book with no bands is
+   just one band of its single difficulty, so everything downstream can treat
+   the two cases identically.
+
+   Seeds stay a single contiguous run — puzzle i is always seed seedStart+i.
+   The generator hashes difficulty into the seed, so the same seed at a
+   different difficulty is a different puzzle, and a band split is therefore
+   part of a book's identity as much as its range is.
+--------------------------------------------------------------------------- */
+function kdpBands(book){
+  if(book.bands && book.bands.length) return book.bands;
+  return [{difficulty: book.difficulty, count: book.puzzleCount}];
+}
+
+function kdpBandTotal(bands){
+  let n = 0;
+  for(const b of bands) n += b.count;
+  return n;
+}
+
+/* The difficulty of every puzzle in order, so dealing and labelling agree. */
+function kdpBandSequence(bands){
+  const out = [];
+  for(const b of bands) for(let i=0;i<b.count;i++) out.push(b.difficulty);
+  return out;
+}
+
+/* 1-based puzzle number ranges, for the front matter. */
+function kdpBandRanges(bands){
+  const out = [];
+  let n = 1;
+  for(const b of bands){
+    if(b.count <= 0) continue;
+    out.push({difficulty: b.difficulty, from: n, to: n + b.count - 1, count: b.count});
+    n += b.count;
+  }
+  return out;
+}
+
+function kdpValidDifficulties(mode){
+  if(mode === "killer")  return DIFFS;
+  if(mode === "classic") return CLASSIC_DIFFS;
+  if(mode === "x")       return X_DIFFS;
+  if(mode === "hyper")   return H_DIFFS;
+  return [];
+}
+
+/* ---------------------------------------------------------------------------
    Pagination. Runs to completion before anything is laid out or dealt.
 --------------------------------------------------------------------------- */
 function kdpPlan(presetId, puzzleCount){
+  presetId = kdpResolvePreset(presetId);
   const P = KDP_PRESETS[presetId];
   if(!P) throw new Error("Unknown preset "+presetId);
   if(!(puzzleCount > 0)) throw new Error("Puzzle count must be positive");
@@ -255,6 +324,14 @@ function kdpRoyalty(list, cost, cur){
   };
 }
 
+/* Break-even at 60% rounded up to the next x.99, then two steps of one unit. */
+function kdpPriceLadder(cost){
+  const min = cost / KDP_RATES.royalty.flat;
+  let base = Math.ceil(min) - 0.01;
+  if(base < min) base += 1;
+  return [base, base + 2, base + 4];
+}
+
 function kdpPricing(plan){
   const P = plan.preset, pages = plan.total, cat = plan.category;
   const out = { pages, category: cat, cover: kdpCoverIn(P, pages), currencies: {} };
@@ -269,7 +346,10 @@ function kdpPricing(plan){
       verified: pc.verified,
       minListFlat60: pc.cost / R.flat,
       minListTiered: pc.cost / R.tierRate.below,
-      points: (P.pricePoints[cur]||[]).map(p => kdpRoyalty(p, pc.cost, cur))
+      /* A starting ladder only. Retail price is a market decision, not a
+         formula, so the UI lets you type your own and recomputes against these
+         costs. */
+      points: kdpPriceLadder(pc.cost, cur).map(p => kdpRoyalty(p, pc.cost, cur))
     };
   }
   return out;
@@ -285,9 +365,12 @@ function kdpWarnings(plan){
   if(plan.total > KDP_RATES.maxInteriorPages)
     w.push({level:"error", text:"Interior is "+plan.total+" pages; KDP's ceiling is "+KDP_RATES.maxInteriorPages+"."});
 
-  /* The flat-fee cliff. Only presets that exist to stay under it are policed
-     against it — a Brick is always past 110 pages and that is not a fault. */
-  if(plan.preset.flatFeeTarget){
+  /* The flat-fee cliff. Whether it is worth chasing depends on how far past it
+     you are, not on a flag someone has to remember to set: just over, and
+     dropping a few puzzles is a real fix; far over, and per-page printing is
+     simply what a book this long costs. */
+  const CHASEABLE = 40;
+  if(plan.total <= cur.flatMax + CHASEABLE){
     if(plan.total > cur.flatMax){
       /* Pages saved per puzzle removed: one puzzle page slot plus one solution slot. */
       const perPuzzle = 1/plan.preset.puzzlesPerPage + 1/plan.preset.solsPerPage;
@@ -296,8 +379,7 @@ function kdpWarnings(plan){
       w.push({level:"warn", loud:true, text:
         "OVER THE FLAT-FEE THRESHOLD. "+plan.total+" pages is "+over+" past "+cur.flatMax+
         ", so printing switches from a flat fee to per-page and every copy costs more. "+
-        "Drop about "+drop+" puzzles — try "+Math.max(1, plan.puzzleCount-drop)+
-        " — to get back under. This threshold is the entire reason this preset exists."});
+        "Drop about "+drop+" puzzles — try "+Math.max(1, plan.puzzleCount-drop)+" — to get back under."});
     } else if(plan.total === cur.flatMax){
       w.push({level:"warn", text:
         "Sitting exactly on the "+cur.flatMax+"-page flat-fee ceiling with zero slack. "+
@@ -307,9 +389,10 @@ function kdpWarnings(plan){
       w.push({level:"warn", text:
         "Only "+(cur.flatMax-plan.total)+" pages of headroom under the "+cur.flatMax+"-page flat-fee ceiling."});
     }
-  } else if(plan.total > cur.flatMax){
+  } else {
     w.push({level:"note", text:
-      "Past the "+cur.flatMax+"-page flat-fee tier, so printing is per-page. Expected for this preset."});
+      "At "+plan.total+" pages this is well past the "+cur.flatMax+"-page flat-fee tier, so printing is "+
+      "per-page. That is what a book this long costs — the threshold is not worth chasing here."});
   }
   if(!KDP_RATES.print[plan.category].GBP.verified)
     w.push({level:"note", text:
@@ -520,6 +603,35 @@ const KDP_HOWTO = {
 
 /* Difficulty copy is generated from the same tables the generator uses, so it
    cannot describe a book it did not produce. */
+/* When a book climbs through several levels, this page is what tells the
+   reader where they are — otherwise puzzle 200 getting harder just reads as
+   the book being inconsistent. */
+function kdpAboutBands(mode, bands){
+  const ranges = kdpBandRanges(bands);
+  const modeName = KDP_MODE_NAME[mode] || mode;
+  const blocks = [{t:"h1", s:"About the puzzles in this book"}];
+  blocks.push({t:"p", s:"This is a "+modeName.toLowerCase()+" book that gets harder as you go. "+
+    "It starts gently and finishes at the top of the range, so you can work straight through it "+
+    "and feel the climb rather than picking puzzles at random."});
+  blocks.push({t:"h2", s:"How it is arranged"});
+  for(const r of ranges){
+    const label = (typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[r.difficulty]) || r.difficulty;
+    blocks.push({t:"li", s:"Puzzles "+r.from+" to "+r.to+" — "+label+" ("+r.count+" puzzle"+(r.count===1?"":"s")+")"});
+  }
+  blocks.push({t:"p", s:"Every puzzle is labelled with its level at the top of the page, and the "+
+    "running head along the top edge carries it too, so you always know which band you are in."});
+  const mins = ranges.map(function(r){
+    return (typeof PAR !== "undefined" && PAR[mode] && PAR[mode][r.difficulty])
+      ? Math.round(PAR[mode][r.difficulty]/60) : null;
+  }).filter(function(x){ return x; });
+  if(mins.length >= 2)
+    blocks.push({t:"p", s:"Our own target times run from about "+mins[0]+" minutes at the start to "+
+      "around "+mins[mins.length-1]+" minutes by the end. They are benchmarks, not a judgement — nobody is timing you."});
+  blocks.push({t:"p", s:"Difficulty is set by how each grid is built, not by how it looks, and every "+
+    "puzzle was machine-checked to have exactly one solution before it was printed."});
+  return blocks;
+}
+
 function kdpAboutDifficulty(mode, diff){
   const label = (typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[diff]) || diff;
   const mins  = (typeof PAR !== "undefined" && PAR[mode] && PAR[mode][diff])
@@ -573,7 +685,9 @@ function kdpDefaultFront(mode, diff, opts){
       "First edition."
     ],
     howto: KDP_HOWTO[mode] || KDP_HOWTO.classic,
-    about: kdpAboutDifficulty(mode, diff)
+    about: (opts.bands && opts.bands.length > 1)
+             ? kdpAboutBands(mode, opts.bands)
+             : kdpAboutDifficulty(mode, diff)
   };
 }
 
@@ -855,7 +969,8 @@ function kdpRenderPage(ctx, plan, cfg, pg, index){
   }
 
   else if(pg.kind === "puzzles"){
-    kdpRunningHead(ctx, box, cfg.runningHead);
+    const first = cfg.puzzles[pg.items[0]];
+    kdpRunningHead(ctx, box, (first && first.runHead) || cfg.runningHead);
     res = kdpRenderPuzzlePage(ctx, plan, cfg, pg, box);
   }
 
@@ -915,11 +1030,25 @@ function kdpLedgerCheck(books, bookId){
       throw new Error("books.json entry '"+bookId+"' is missing required field '"+f+"'");
   if(b.seedEnd < b.seedStart)
     throw new Error("'"+bookId+"' has seedEnd before seedStart");
+  if(b.bands && b.bands.length){
+    const valid = kdpValidDifficulties(b.mode);
+    for(const band of b.bands){
+      if(!(band.count > 0))
+        throw new Error("'"+bookId+"' has a difficulty band with no puzzles in it.");
+      if(valid.indexOf(band.difficulty) < 0)
+        throw new Error("'"+bookId+"' has a '"+band.difficulty+"' band, which "+
+          (KDP_MODE_NAME[b.mode]||b.mode)+" does not have. Its levels are: "+valid.join(", ")+".");
+    }
+    const bt = kdpBandTotal(b.bands);
+    if(bt !== b.puzzleCount)
+      throw new Error("'"+bookId+"' has difficulty bands totalling "+bt+" puzzles but declares "+
+                      b.puzzleCount+". They have to agree.");
+  }
   const span = b.seedEnd - b.seedStart + 1;
   if(span !== b.puzzleCount)
     throw new Error("'"+bookId+"' declares puzzleCount "+b.puzzleCount+" but its seed range "+
                     b.seedStart+"–"+b.seedEnd+" holds "+span+" seeds. Fix books.json.");
-  if(!KDP_PRESETS[b.preset])
+  if(!KDP_PRESETS[kdpResolvePreset(b.preset)])
     throw new Error("'"+bookId+"' names unknown preset '"+b.preset+"'");
 
   const overlaps = [];
@@ -938,7 +1067,7 @@ function kdpLedgerCheck(books, bookId){
     if(b.seedStart !== base.seedStart || b.seedEnd !== base.seedEnd)
       throw new Error("'"+bookId+"' is an alt edition of '"+b.altEditionOf+"' but does not reuse its exact seed range ("+
                       base.seedStart+"–"+base.seedEnd+"). An alt edition must be the same puzzles.");
-    if(b.preset === base.preset)
+    if(kdpResolvePreset(b.preset) === kdpResolvePreset(base.preset))
       throw new Error("'"+bookId+"' is an alt edition of '"+b.altEditionOf+"' under the SAME preset ("+b.preset+"). "+
                       "That is a duplicate book, not a large-print edition.");
     if(b.mode !== base.mode || b.difficulty !== base.difficulty)
@@ -950,7 +1079,7 @@ function kdpLedgerCheck(books, bookId){
       return k !== b.altEditionOf && books[k].altEditionOf === b.altEditionOf;
     });
     for(const k of siblings){
-      if(books[k].preset === b.preset)
+      if(kdpResolvePreset(books[k].preset) === kdpResolvePreset(b.preset))
         throw new Error("'"+bookId+"' and '"+k+"' are both alt editions of '"+b.altEditionOf+
           "' under the SAME preset ("+b.preset+"). Two editions of one title have to be different formats.");
     }
@@ -987,8 +1116,8 @@ function kdpSeriesList(books, bookId){
   const out = [];
   for(const k in books){
     if(!Object.prototype.hasOwnProperty.call(books,k) || k === bookId) continue;
-    const o = books[k], p = KDP_PRESETS[o.preset];
-    out.push(o.title + (p && p.id === "C" ? " — large print edition" : "") +
+    const o = books[k], p = KDP_PRESETS[kdpResolvePreset(o.preset)];
+    out.push(o.title + (o.altEditionOf && p ? " — " + p.name : "") +
              (o.puzzleCount ? " · " + o.puzzleCount + " puzzles" : ""));
   }
   return out.sort();

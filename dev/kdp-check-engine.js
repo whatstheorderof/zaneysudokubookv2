@@ -96,7 +96,19 @@ function checkBook(bookId) {
   while (picked.size < Math.min(20, book.puzzleCount)) picked.add((r() * book.puzzleCount) | 0);
   const sample = Array.from(picked).sort(function (a, b) { return a - b; });
 
+  const seq = mod.kdpBandSequence(mod.kdpBands(book));
   const useX = book.mode === "x", useH = book.mode === "hyper";
+  const ranges = mod.kdpBandRanges(mod.kdpBands(book));
+  if (ranges.length > 1)
+    console.log("  bands: " + ranges.map(function (r) {
+      return r.difficulty + " " + r.from + "-" + r.to;
+    }).join(", "));
+  check("every puzzle carries the difficulty its band says",
+    first.cfg.puzzles.every(function (p, i) { return p.diffLabel === (mod.DIFF_LABEL[seq[i]] || seq[i]); }) &&
+    first.deck.every(function (P, i) { return P.diff === seq[i]; }),
+    seq.length + " puzzles checked against the band sequence");
+  check("the running head follows the band",
+    first.cfg.puzzles.every(function (p, i) { return p.runHead.indexOf(mod.DIFF_LABEL[seq[i]] || seq[i]) >= 0; }));
   const bad = [];
   for (const idx of sample) {
     const P = first.deck[idx];
@@ -138,7 +150,7 @@ function checkBook(bookId) {
      book testable without dealing it three times over. */
   const redealt = [];
   for (const idx of sample) {
-    const again = H.dealOne(book.mode, book.difficulty, book.seedStart + idx);
+    const again = H.dealOne(book.mode, seq[idx], book.seedStart + idx);
     const P = first.deck[idx];
     let ok = true;
     for (let i = 0; i < 81; i++) if (again.sol[i] !== P.sol[i] || again.given[i] !== P.given[i]) ok = false;

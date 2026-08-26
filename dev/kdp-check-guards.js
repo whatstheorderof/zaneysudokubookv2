@@ -122,6 +122,64 @@ refuses("a puzzleCount that disagrees with the seed range is refused", function 
                                  seedStart: 30000, seedEnd: 30099, puzzleCount: 336 } }, "ZS-X");
 }, "holds 100 seeds");
 
+console.log("\n=== difficulty bands ===");
+
+refuses("bands that do not add up to the puzzle count are refused", function () {
+  mod.kdpLedgerCheck({ "ZS-X": { title: "X", mode: "killer", difficulty: "easy", preset: "5.06x7.81/1up",
+    seedStart: 30000, seedEnd: 30099, puzzleCount: 100,
+    bands: [{ difficulty: "easy", count: 40 }, { difficulty: "hard", count: 40 }] } }, "ZS-X");
+}, "have to agree");
+
+refuses("a band at a level the mode does not have is refused", function () {
+  mod.kdpLedgerCheck({ "ZS-X": { title: "X", mode: "classic", difficulty: "easy", preset: "5.06x7.81/1up",
+    seedStart: 30000, seedEnd: 30099, puzzleCount: 100,
+    bands: [{ difficulty: "easy", count: 50 }, { difficulty: "nightmare", count: 50 }] } }, "ZS-X");
+}, "does not have");
+
+refuses("an empty band is refused", function () {
+  mod.kdpLedgerCheck({ "ZS-X": { title: "X", mode: "killer", difficulty: "easy", preset: "5.06x7.81/1up",
+    seedStart: 30000, seedEnd: 30099, puzzleCount: 100,
+    bands: [{ difficulty: "easy", count: 100 }, { difficulty: "hard", count: 0 }] } }, "ZS-X");
+}, "no puzzles in it");
+
+allows("a climbing book is accepted and expands in order", function () {
+  const b = { title: "X", mode: "killer", difficulty: "easy", preset: "5.06x7.81/1up",
+    seedStart: 30000, seedEnd: 30099, puzzleCount: 100,
+    bands: [{ difficulty: "easy", count: 30 }, { difficulty: "medium", count: 40 }, { difficulty: "hard", count: 30 }] };
+  mod.kdpLedgerCheck({ "ZS-X": b }, "ZS-X");
+  const seq = mod.kdpBandSequence(b.bands);
+  if (seq.length !== 100) throw new Error("sequence length " + seq.length);
+  if (seq[29] !== "easy" || seq[30] !== "medium" || seq[69] !== "medium" || seq[70] !== "hard")
+    throw new Error("bands do not change where they should");
+  const r = mod.kdpBandRanges(b.bands);
+  return r.map(function (x) { return x.difficulty + " " + x.from + "-" + x.to; }).join(", ");
+});
+
+allows("a book with no bands behaves as one band of its difficulty", function () {
+  const seq = mod.kdpBandSequence(mod.kdpBands({ difficulty: "hard", puzzleCount: 5 }));
+  if (seq.join(",") !== "hard,hard,hard,hard,hard") throw new Error(seq.join(","));
+  return "5 puzzles, all hard";
+});
+
+console.log("\n=== trim sizes ===");
+
+allows("every trim x layout combination plans and prices", function () {
+  const lines = [];
+  for (const id of Object.keys(mod.KDP_PRESETS)) {
+    const P = mod.KDP_PRESETS[id];
+    const plan = mod.kdpPlan(id, P.defaultPuzzles);
+    const pr = mod.kdpPricing(plan);
+    if (!(pr.currencies.GBP.print > 0)) throw new Error(id + " has no print cost");
+    if (plan.total % 2 !== 0) throw new Error(id + " gives an odd page count");
+    lines.push(id + " " + plan.total + "pp");
+  }
+  return lines.join(", ");
+});
+
+allows("the old A/B/C preset names still resolve", function () {
+  return ["A", "B", "C"].map(function (a) { return a + "->" + mod.kdpResolvePreset(a); }).join(" ");
+});
+
 console.log("\n=== pagination and geometry ===");
 
 refuses("a page count outside every gutter tier is refused", function () {
@@ -148,7 +206,7 @@ allows("the divider is forced onto a recto by inserting a filler", function () {
 
 allows("every viable puzzle count gives an even total with a recto divider", function () {
   let checked = 0, tooShort = 0;
-  for (const id of ["A", "B", "C"]) {
+  for (const id of ["5.06x7.81/1up", "8.5x11/2up", "8.5x11/1up"]) {
     for (let n = 1; n <= 400; n++) {
       let p;
       try {
@@ -174,7 +232,7 @@ allows("every viable puzzle count gives an even total with a recto divider", fun
       if (puz.length !== n) throw new Error(id + " @ " + n + " has " + puz.length + " puzzle slots");
     }
   }
-  return checked + " plans checked across presets A, B and C (" + tooShort + " rejected as under 24 pages)";
+  return checked + " plans checked across three formats (" + tooShort + " rejected as under 24 pages)";
 });
 
 allows("the mirrored live area really does swap sides", function () {
@@ -227,10 +285,10 @@ refuses("an impossible preset/mode combination aborts instead of shipping", func
   }
 }, "EXPORT ABORTED");
 
-allows("the three real presets all clear the 5pt floor", function () {
-  const L = mod.KDP_LAYOUT, IN = mod.KDP_IN, M = mod.KDP_MARGIN_IN * IN;
+allows("every offered size and layout clears the 5pt floor", function () {
+  const L = mod.KDP_LAYOUT, IN = mod.KDP_IN;
   const lines = [];
-  for (const id of ["A", "B", "C"]) {
+  for (const id of Object.keys(mod.KDP_PRESETS)) {
     const P = mod.KDP_PRESETS[id];
     const plan = mod.kdpPlan(id, P.defaultPuzzles);
     const box = mod.kdpLiveArea(P, 7, plan.gutterIn);
@@ -243,11 +301,11 @@ allows("the three real presets all clear the 5pt floor", function () {
     const sh = ((contentBot - box.y) - L.solRowGapPt * (P.solRows - 1)) / P.solRows;
     const sfit = mod.kdpFitGrid(sw, sh - (L.solLabelPt + 5), 0, { given: true, sol: true });
     if (!sfit.ok) throw new Error(id + " solutions fail the floor at " + sfit.smallest.toFixed(2) + "pt");
-    lines.push(id + ": killer cage sums " + (fit.cell * L.cageRatio).toFixed(2) +
-      "pt, givens " + (fit.cell * L.givenRatio).toFixed(1) +
-      "pt, solution digits " + (sfit.cell * L.solRatio).toFixed(2) + "pt");
+    lines.push("\n      " + id.padEnd(15) + " cage sums " + (fit.cell * L.cageRatio).toFixed(2) +
+      "pt · givens " + (fit.cell * L.givenRatio).toFixed(1) +
+      "pt · solutions " + (sfit.cell * L.solRatio).toFixed(2) + "pt");
   }
-  return lines.join(" | ");
+  return lines.join("");
 });
 
 console.log("\n=== embedded font coverage ===");

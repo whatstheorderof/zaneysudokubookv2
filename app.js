@@ -4,10 +4,9 @@
    DOM only. Every calculation lives in core.js, which the Node tests load
    alongside engine.js, so the tests and this page run the same code.
 
-   The library lives in localStorage so you can create and edit books here
-   rather than hand-editing JSON. books.json in the repo is only the starting
-   point; "Download books.json" writes the current library back out so you can
-   commit it.
+   The library lives in localStorage so books are made here rather than by
+   hand-editing JSON. books.json in the repo is the starting point;
+   "Download books.json" writes the current library back out to commit.
    ========================================================================== */
 
 const $ = function (s) { return document.querySelector(s); };
@@ -17,79 +16,73 @@ function esc(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
-function setStatus(el, html, cls) {
-  el.className = "status " + (cls || "");
-  el.innerHTML = html;
-}
+function setStatus(el, html, cls) { el.className = "status " + (cls || ""); el.innerHTML = html; }
+function money(v, cur) { return (cur === "GBP" ? "£" : "$") + v.toFixed(2); }
+function diffName(d) { return (DIFF_LABEL && DIFF_LABEL[d]) || d; }
 
-/* ---------------------------------------------------------------------------
-   Library
---------------------------------------------------------------------------- */
 let LIB = {};
 let SELECTED = null;
-let EDITING = null;          /* book id being edited, or "" for a new one */
+let EDITING = null;
 
+/* ---------------------------------------------------------------------------
+   Storage
+--------------------------------------------------------------------------- */
 function libLoad() {
-  try {
-    const raw = localStorage.getItem(LIB_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) { /* fall through to the file */ }
+  try { const raw = localStorage.getItem(LIB_KEY); if (raw) return JSON.parse(raw); }
+  catch (e) { /* fall through to the file */ }
   return null;
 }
 function libSave() {
   try { localStorage.setItem(LIB_KEY, JSON.stringify(LIB)); }
-  catch (e) { setStatus($("#libMsg"), "Could not save to this browser's storage: " + esc(e.message), "warn"); }
+  catch (e) { setStatus($("#libMsg"), "Could not save to this browser: " + esc(e.message), "warn"); }
 }
-
 function nextBookId() {
   let n = 0;
-  for (const k in LIB) {
-    const m = /^ZS-(\d+)$/.exec(k);
-    if (m) n = Math.max(n, parseInt(m[1], 10));
-  }
+  for (const k in LIB) { const m = /^ZS-(\d+)$/.exec(k); if (m) n = Math.max(n, parseInt(m[1], 10)); }
   return "ZS-" + String(n + 1).padStart(3, "0");
 }
-
-/* Hand back a block that cannot collide with anything already in the library,
-   rounded up to the next thousand so the ledger stays readable. */
+/* A block that cannot collide with anything already here, rounded to a
+   thousand so the ledger stays readable. */
 function nextSeedStart() {
   let max = 9999;
   for (const k in LIB) if (LIB[k].seedEnd > max) max = LIB[k].seedEnd;
   return Math.ceil((max + 1) / 1000) * 1000;
 }
+function planFor(b) { try { return kdpPlan(b.preset, b.puzzleCount); } catch (e) { return null; } }
 
-function planFor(b) {
-  try { return kdpPlan(b.preset, b.puzzleCount); }
-  catch (e) { return null; }
+/* ---------------------------------------------------------------------------
+   Library table
+--------------------------------------------------------------------------- */
+function bandSummary(b) {
+  const bands = kdpBands(b);
+  if (bands.length === 1) return diffName(bands[0].difficulty);
+  return bands.map(function (x) { return diffName(x.difficulty); }).join(" → ");
 }
 
 function renderLibrary() {
   const ids = Object.keys(LIB).sort();
   const body = $("#libBody");
   if (!ids.length) {
-    body.innerHTML = "<tr><td colspan='8' class='dim' style='padding:18px 0'>" +
-      "No books yet. Hit <b>+ New book</b> to make one.</td></tr>";
-    $("#expWho").textContent = "";
-    $("#readout").innerHTML = "";
-    $("#ledgerMsg").innerHTML = "";
+    body.innerHTML = "<tr><td colspan='6' class='dim' style='padding:18px 0'>" +
+      "No books yet. Hit <b>+ New book</b>.</td></tr>";
+    $("#expWho").textContent = ""; $("#readout").innerHTML = ""; $("#ledgerMsg").innerHTML = "";
     return;
   }
   body.innerHTML = ids.map(function (id) {
     const b = LIB[id], p = planFor(b);
-    const label = (typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[b.difficulty]) || b.difficulty;
+    const preset = KDP_PRESETS[kdpResolvePreset(b.preset)];
     return "<tr class='book" + (id === SELECTED ? " sel" : "") + "' data-id='" + esc(id) + "'>" +
       "<td class='mono'>" + esc(id) + "</td>" +
       "<td><b>" + esc(b.title) + "</b>" +
-        (b.altEditionOf ? " <span class='pill'>alt of " + esc(b.altEditionOf) + "</span>" : "") + "</td>" +
-      "<td>" + esc((KDP_MODE_NAME[b.mode] || b.mode).replace(" Sudoku", "")) + " · " + esc(label) + "</td>" +
-      "<td>" + esc(b.preset) + " <span class='dim'>" + esc(KDP_PRESETS[b.preset] ? KDP_PRESETS[b.preset].name : "?") + "</span></td>" +
+        (b.altEditionOf ? " <span class='pill'>same puzzles as " + esc(b.altEditionOf) + "</span>" : "") +
+        "<br><span class='dim small'>" + esc((KDP_MODE_NAME[b.mode] || b.mode)) + " · " + esc(bandSummary(b)) + "</span></td>" +
       "<td>" + b.puzzleCount + "</td>" +
+      "<td>" + (preset ? esc(preset.trimIn[0] + " × " + preset.trimIn[1] + " in") +
+        "<br><span class='dim small'>" + esc(preset.name) + "</span>" : "<span class='bad'>?</span>") + "</td>" +
       "<td>" + (p ? p.total : "<span class='bad'>—</span>") + "</td>" +
-      "<td class='mono'>" + b.seedStart + "–" + b.seedEnd + "</td>" +
       "<td style='text-align:right;white-space:nowrap'>" +
         "<button class='ghost small' data-edit='" + esc(id) + "'>Edit</button> " +
-        "<button class='danger small' data-del='" + esc(id) + "'>Delete</button></td>" +
-      "</tr>";
+        "<button class='danger small' data-del='" + esc(id) + "'>Delete</button></td></tr>";
   }).join("");
 
   body.querySelectorAll("tr.book").forEach(function (tr) {
@@ -98,20 +91,18 @@ function renderLibrary() {
       selectBook(tr.dataset.id);
     });
   });
-  body.querySelectorAll("[data-edit]").forEach(function (b) {
-    b.addEventListener("click", function () { openEditor(b.dataset.edit); });
+  body.querySelectorAll("[data-edit]").forEach(function (el) {
+    el.addEventListener("click", function () { openEditor(el.dataset.edit); });
   });
-  body.querySelectorAll("[data-del]").forEach(function (b) {
-    b.addEventListener("click", function () {
-      const id = b.dataset.del;
-      if (!confirm("Delete " + id + " (" + LIB[id].title + ")?\n\nThis only removes it from this browser. " +
-                   "Download books.json afterwards if you want the change kept.")) return;
+  body.querySelectorAll("[data-del]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      const id = el.dataset.del;
+      if (!confirm("Delete " + id + " (" + LIB[id].title + ")?\n\nThis only removes it from this browser.")) return;
       delete LIB[id];
       if (SELECTED === id) SELECTED = null;
       libSave(); refresh();
     });
   });
-
   if (!SELECTED || !LIB[SELECTED]) SELECTED = ids[0];
 }
 
@@ -127,53 +118,88 @@ function refresh() {
   renderLibrary();
   const b = LIB[SELECTED];
   if (!b) return;
-
-  const label = DIFF_LABEL[b.difficulty] || b.difficulty;
   $("#expWho").textContent = SELECTED + " · " + b.title;
-
-  let msg = "";
   try {
     const chk = kdpLedgerCheck(LIB, SELECTED);
-    msg = "<p class='msg " + (chk.path === "altEdition" ? "warn" : "ok") + "'>" + esc(chk.message) + "</p>";
+    $("#ledgerMsg").innerHTML = "<p class='msg " + (chk.path === "altEdition" ? "warn" : "ok") + "'>" +
+      esc(chk.message) + "</p>";
   } catch (e) {
-    msg = "<p class='msg bad'>" + esc(e.message) + "</p>";
+    $("#ledgerMsg").innerHTML = "<p class='msg bad'>" + esc(e.message) + "</p>";
   }
-  $("#ledgerMsg").innerHTML = msg;
-
   try {
-    const plan = kdpPlan(b.preset, b.puzzleCount);
-    $("#readout").innerHTML = renderReadout(plan, b.preset);
+    $("#readout").innerHTML = renderReadout(kdpPlan(b.preset, b.puzzleCount), b);
+    wirePriceInputs(kdpPlan(b.preset, b.puzzleCount));
   } catch (e) {
     $("#readout").innerHTML = "<p class='msg bad'>" + esc(e.message) + "</p>";
   }
 }
 
 /* ---------------------------------------------------------------------------
-   New / edit book
+   Editor
 --------------------------------------------------------------------------- */
 const MODES = [["killer", "Killer"], ["classic", "Classic"], ["x", "Sudoku X"], ["hyper", "Hyper"]];
 
-function diffsFor(mode) {
-  if (mode === "killer") return DIFFS;
-  if (mode === "classic") return CLASSIC_DIFFS;
-  if (mode === "x") return X_DIFFS;
-  return H_DIFFS;
+function fillDiffSelect(sel, mode, want) {
+  const ds = kdpValidDifficulties(mode);
+  sel.innerHTML = ds.map(function (d) { return "<option value='" + d + "'>" + esc(diffName(d)) + "</option>"; }).join("");
+  sel.value = ds.indexOf(want) >= 0 ? want : ds[0];
 }
 
-function syncDiffs() {
-  const mode = $("#fMode").value, want = $("#fDiff").value;
-  const ds = diffsFor(mode);
-  $("#fDiff").innerHTML = ds.map(function (d) {
-    return "<option value='" + d + "'>" + esc(DIFF_LABEL[d] || d) + "</option>";
-  }).join("");
-  if (ds.indexOf(want) >= 0) $("#fDiff").value = want;
+function currentPresetId() { return $("#fTrim").value + "/" + $("#fLayout").value; }
+
+function bandRows() { return Array.prototype.slice.call(document.querySelectorAll("#bands .band")); }
+
+function addBandRow(difficulty, count) {
+  const mode = $("#fMode").value;
+  const div = document.createElement("div");
+  div.className = "band";
+  div.innerHTML = "<select></select><input type='number' min='1' value='" + (count || 50) + "'>" +
+    "<span class='bandFrom'></span><button class='danger small' type='button'>Remove</button>";
+  $("#bands").appendChild(div);
+  fillDiffSelect(div.querySelector("select"), mode, difficulty);
+  div.querySelector("select").addEventListener("change", updatePreview);
+  div.querySelector("input").addEventListener("input", updatePreview);
+  div.querySelector("button").addEventListener("click", function () {
+    if (bandRows().length <= 1) return;
+    div.remove(); updatePreview();
+  });
+  updatePreview();
+}
+
+function readBands() {
+  if ($("#fSingle").checked)
+    return [{ difficulty: $("#fDiff").value, count: parseInt($("#fCount").value, 10) || 0 }];
+  return bandRows().map(function (r) {
+    return { difficulty: r.querySelector("select").value, count: parseInt(r.querySelector("input").value, 10) || 0 };
+  });
+}
+
+function updatePreview() {
+  const bands = readBands();
+  const total = kdpBandTotal(bands);
+  const ranges = kdpBandRanges(bands);
+  bandRows().forEach(function (r, i) {
+    const g = ranges[i];
+    r.querySelector(".bandFrom").textContent = g ? "puzzles " + g.from + "–" + g.to : "";
+  });
+  $("#bandTotal").textContent = total + " puzzles in total";
+
+  let line = total + " puzzle" + (total === 1 ? "" : "s");
+  try {
+    const plan = kdpPlan(currentPresetId(), total);
+    const pr = kdpPricing(plan);
+    line += " → <b>" + plan.total + " pages</b> · spine " + pr.spineCm.toFixed(2) + " cm · " +
+      "print " + money(pr.currencies.GBP.print, "GBP") + " / " + money(pr.currencies.USD.print, "USD");
+  } catch (e) {
+    line += " → <span class='bad'>" + esc(e.message) + "</span>";
+  }
+  $("#editPreview").innerHTML = line;
 }
 
 function syncAltOptions() {
-  const opts = ["<option value=''>— not an alt edition —</option>"];
+  const opts = ["<option value=''>— its own puzzles —</option>"];
   for (const id of Object.keys(LIB).sort()) {
-    if (id === EDITING) continue;
-    if (LIB[id].altEditionOf) continue;      /* no alt-of-an-alt */
+    if (id === EDITING || LIB[id].altEditionOf) continue;
     opts.push("<option value='" + esc(id) + "'>" + esc(id) + " — " + esc(LIB[id].title) + "</option>");
   }
   const want = $("#fAlt").value;
@@ -184,35 +210,67 @@ function syncAltOptions() {
 function applyAltLock() {
   const base = LIB[$("#fAlt").value];
   const locked = !!base;
-  ["fMode", "fDiff", "fCount", "fSeed"].forEach(function (id) { $("#" + id).disabled = locked; });
+  ["fMode", "fDiff", "fCount", "fSeed", "fSingle", "fClimb"].forEach(function (id) { $("#" + id).disabled = locked; });
+  bandRows().forEach(function (r) {
+    r.querySelector("select").disabled = locked;
+    r.querySelector("input").disabled = locked;
+  });
+  $("#btnAddBand").disabled = locked;
   if (locked) {
-    $("#fMode").value = base.mode; syncDiffs();
-    $("#fDiff").value = base.difficulty;
-    $("#fCount").value = base.puzzleCount;
+    $("#fMode").value = base.mode;
+    setBands(kdpBands(base), base.mode);
     $("#fSeed").value = base.seedStart;
-    $("#editHint").textContent = "An alt edition reuses " + $("#fAlt").value +
-      "'s exact puzzles under a different preset — the same book in another format.";
+    $("#editHint").textContent = "This will be the same puzzles as " + $("#fAlt").value +
+      " in a different size — a second edition of one title. Pick a different trim or layout below.";
   } else {
-    $("#editHint").textContent = "";
+    $("#editHint").textContent = "Seed start is chosen for you, clear of every other book. " +
+      "Only change it if you know why.";
   }
+  updatePreview();
+}
+
+function setBands(bands, mode) {
+  $("#bands").innerHTML = "";
+  if (bands.length === 1) {
+    $("#fSingle").checked = true;
+    fillDiffSelect($("#fDiff"), mode, bands[0].difficulty);
+    $("#fCount").value = bands[0].count;
+    addBandRow(bands[0].difficulty, bands[0].count);
+  } else {
+    $("#fClimb").checked = true;
+    fillDiffSelect($("#fDiff"), mode, bands[0].difficulty);
+    $("#fCount").value = kdpBandTotal(bands);
+    for (const b of bands) addBandRow(b.difficulty, b.count);
+  }
+  syncDiffMode();
+}
+
+function syncDiffMode() {
+  const climb = $("#fClimb").checked;
+  $("#climbWrap").classList.toggle("hide", !climb);
+  $("#singleWrap").classList.toggle("hide", climb);
+  updatePreview();
 }
 
 function openEditor(id) {
   EDITING = id || "";
   const b = id ? LIB[id] : null;
-  $("#fMode").innerHTML = MODES.map(function (m) {
-    return "<option value='" + m[0] + "'>" + m[1] + "</option>";
+
+  $("#fMode").innerHTML = MODES.map(function (m) { return "<option value='" + m[0] + "'>" + m[1] + "</option>"; }).join("");
+  $("#fTrim").innerHTML = KDP_TRIMS.map(function (t) {
+    return "<option value='" + t.id + "'>" + t.wIn + " × " + t.hIn + " in — " + esc(t.name) + "</option>";
   }).join("");
-  $("#fPreset").innerHTML = Object.keys(KDP_PRESETS).map(function (k) {
-    return "<option value='" + k + "'>" + k + " — " + KDP_PRESETS[k].name + "</option>";
+  $("#fLayout").innerHTML = KDP_LAYOUTS.map(function (L) {
+    return "<option value='" + L.id + "'>" + esc(L.name) + "</option>";
   }).join("");
 
+  const preset = KDP_PRESETS[kdpResolvePreset(b ? b.preset : "5.06x7.81/1up")] || KDP_PRESETS["5.06x7.81/1up"];
   $("#fMode").value = b ? b.mode : "killer";
-  syncDiffs();
-  $("#fDiff").value = b ? b.difficulty : "hard";
-  $("#fPreset").value = b ? b.preset : "A";
-  $("#fCount").value = b ? b.puzzleCount : KDP_PRESETS[$("#fPreset").value].defaultPuzzles;
+  $("#fTrim").value = preset.trimId;
+  $("#fLayout").value = preset.layoutId;
   $("#fTitle").value = b ? b.title : "";
+
+  setBands(b ? kdpBands(b) : [{ difficulty: "hard", count: preset.defaultPuzzles }], $("#fMode").value);
   syncAltOptions();
   $("#fAlt").value = b && b.altEditionOf ? b.altEditionOf : "";
   $("#fSeed").value = b ? b.seedStart : nextSeedStart();
@@ -223,53 +281,49 @@ function openEditor(id) {
   $("#fTitle").focus();
 }
 
-function closeEditor() {
-  $("#editor").classList.add("hide");
-  EDITING = null;
-}
+function closeEditor() { $("#editor").classList.add("hide"); EDITING = null; }
 
 function saveBook() {
-  const count = parseInt($("#fCount").value, 10);
+  const fail = function (m) { $("#editMsg").innerHTML = "<p class='msg bad'>" + esc(m) + "</p>"; };
+  const bands = readBands();
+  const count = kdpBandTotal(bands);
   const seedStart = parseInt($("#fSeed").value, 10);
   const title = $("#fTitle").value.trim();
   const alt = $("#fAlt").value || null;
 
-  const fail = function (m) { $("#editMsg").innerHTML = "<p class='msg bad'>" + esc(m) + "</p>"; };
-
   if (!title) return fail("Give the book a title.");
-  if (!(count > 0)) return fail("Puzzle count must be a positive number.");
+  if (!(count > 0)) return fail("The book needs at least one puzzle.");
+  for (const b of bands) if (!(b.count > 0)) return fail("Every difficulty level needs at least one puzzle.");
   if (!(seedStart > 0)) return fail("Seed start must be a positive number.");
   if (seedStart + count - 1 > 100000)
     return fail("That seed range runs past 100,000, which is as far as the generator goes. " +
                 "Use a lower seed start or fewer puzzles.");
 
   const id = EDITING || nextBookId();
+  const prev = LIB[id];
   const entry = {
     title: title,
     mode: $("#fMode").value,
-    difficulty: $("#fDiff").value,
-    preset: $("#fPreset").value,
+    difficulty: bands[0].difficulty,
+    preset: currentPresetId(),
     seedStart: seedStart,
     seedEnd: seedStart + count - 1,
     puzzleCount: count,
     pageCount: 0,
-    published: (EDITING && LIB[id] && LIB[id].published) || null,
-    asin: (EDITING && LIB[id] && LIB[id].asin) || null
+    published: (prev && prev.published) || null,
+    asin: (prev && prev.asin) || null
   };
+  if (bands.length > 1) entry.bands = bands;
   if (alt) entry.altEditionOf = alt;
 
-  /* Validate against a copy, so a rejected edit cannot corrupt the library. */
   const candidate = Object.assign({}, LIB);
   candidate[id] = entry;
-  try {
-    kdpLedgerCheck(candidate, id);
-  } catch (e) {
-    return fail(e.message);
-  }
+  try { kdpLedgerCheck(candidate, id); } catch (e) { return fail(e.message); }
+
   const plan = planFor(entry);
   if (!plan)
-    return fail("That combination does not make a valid book — most likely under KDP's 24-page " +
-                "minimum. Add more puzzles or pick a preset with fewer per page.");
+    return fail("That does not make a valid book — most likely under KDP's 24-page minimum. " +
+                "Add more puzzles, or put fewer on a page.");
   entry.pageCount = plan.total;
 
   LIB[id] = entry;
@@ -280,54 +334,70 @@ function saveBook() {
 }
 
 /* ---------------------------------------------------------------------------
-   Readout
+   Costs readout
 --------------------------------------------------------------------------- */
-function money(v, cur) { return (cur === "GBP" ? "£" : "$") + v.toFixed(2); }
-
-function renderReadout(plan, presetId) {
+function renderReadout(plan, book) {
   const pr = kdpPricing(plan), warns = kdpWarnings(plan);
-  const P = plan.preset, cover = pr.cover;
+  const P = plan.preset;
   let h = "";
   for (const w of warns) {
     const cls = w.level === "error" ? "bad" : w.level === "warn" ? "warn" : "note";
-    h += "<p class='msg " + cls + "'>" + (w.level === "error" ? "⛔ " : w.level === "warn" ? "⚠ " : "ℹ ") + esc(w.text) + "</p>";
+    h += "<p class='msg " + cls + "'>" + (w.level === "error" ? "⛔ " : w.level === "warn" ? "⚠ " : "ℹ ") +
+      esc(w.text) + "</p>";
   }
   h += "<table class='kv'>";
   const row = function (k, v) { h += "<tr><th>" + k + "</th><td>" + v + "</td></tr>"; };
-  row("Preset", "<b>" + presetId + " — " + P.name + "</b> · " + P.trimIn[0] + " × " + P.trimIn[1] + " in · " + plan.category + " trim");
-  row("Puzzles", plan.puzzleCount + " · " + P.puzzlesPerPage + "/page · solutions " + P.solsPerPage + "/page");
+  row("Size", "<b>" + P.trimIn[0] + " × " + P.trimIn[1] + " in</b> · " + esc(P.name) + " · " + plan.category + " trim");
+  row("Puzzles", plan.puzzleCount + " · " + esc(bandSummary(book)) + " · " + P.puzzlesPerPage + " a page");
   row("Pages", "<b>" + plan.total + "</b> <span class='dim'>(6 front + " + plan.puzzlePages +
-    " puzzle + divider/verso + " + plan.solutionPages + " solutions + back matter" +
-    (plan.recotFiller ? " + 1 recto filler" : "") + (plan.evenPad ? " + 1 even pad" : "") + ")</span>");
-  row("Gutter", plan.gutterIn + " in <span class='dim'>(" + plan.gutterTier.min + "–" + plan.gutterTier.max +
-    " pp tier; KDP's own minimum there is " + plan.gutterTier.tierIn + " in)</span>");
-  row("Divider", "page " + plan.dividerPage + " <span class='dim'>(recto ✓)</span>");
+    " puzzle + divider + " + plan.solutionPages + " solutions + back matter)</span>");
+  row("Gutter", plan.gutterIn + " in <span class='dim'>(" + plan.gutterTier.min + "–" + plan.gutterTier.max + " pp tier)</span>");
   row("Spine", pr.spineIn.toFixed(4) + " in / " + pr.spineCm.toFixed(2) + " cm");
-  row("Cover wrap", "<b>" + cover.w.toFixed(3) + " × " + cover.h.toFixed(3) + " in</b> <span class='dim'>— for Canva</span>");
-  for (const cur of ["USD", "GBP"]) {
+  row("Cover wrap", "<b>" + pr.cover.w.toFixed(3) + " × " + pr.cover.h.toFixed(3) + " in</b> <span class='dim'>— for Canva</span>");
+  for (const cur of ["GBP", "USD"]) {
     const c = pr.currencies[cur];
     row(cur + " print cost", "<b>" + money(c.print, cur) + "</b> " + (c.flatFee ? "flat" : "per-page") +
-      (c.verified ? "" : " <span class='warnInline'>(UNVERIFIED)</span>"));
-    row(cur + " min list", money(c.minListFlat60, cur) + " at 60% · " + money(c.minListTiered, cur) + " at 50%");
+      (c.verified ? "" : " <span class='warnInline'>(UNVERIFIED)</span>") +
+      " <span class='dim'>· breaks even at " + money(c.minListFlat60, cur) + "</span>");
   }
   h += "</table>";
-  h += "<p class='dim small' style='margin:12px 0 4px'><b>Royalty per copy</b> — two models. <i>Flat 60%</i> is " +
-    "what I believe KDP pays for paperback; <i>tiered</i> is the 60/50 split, which is the Kindle rule. " +
-    "Check in KDP before pricing.</p>";
-  h += "<table class='kv royalty'><tr><th>List</th><th class='r'>Flat 60%</th><th class='r'>Tiered</th></tr>";
+
+  h += "<p class='dim small' style='margin:14px 0 2px'><b>What you would earn</b> — type your list price. " +
+    "Flat 60% is what I believe KDP pays for paperback; the tiered figure is the 60/50 split, which is the " +
+    "Kindle rule. Check in KDP before committing.</p>";
   for (const cur of ["GBP", "USD"]) {
-    for (const pt of pr.currencies[cur].points) {
-      h += "<tr><td>" + money(pt.list, cur) + "</td><td class='r" + (pt.flat60 <= 0 ? " bad" : "") + "'>" +
-        money(pt.flat60, cur) + "</td><td class='r dim'>" + money(pt.tiered, cur) +
-        " <span class='small'>@" + Math.round(pt.tierRate * 100) + "%</span></td></tr>";
-    }
+    const c = pr.currencies[cur];
+    const suggested = c.points[1] ? c.points[1].list : Math.ceil(c.minListFlat60) + 0.99;
+    h += "<div class='price'><div><label for='p" + cur + "'>" + cur + " list price</label>" +
+      "<input id='p" + cur + "' type='number' step='0.01' min='0' value='" + suggested.toFixed(2) + "'></div>" +
+      "<div class='earn' id='e" + cur + "'></div></div>";
   }
-  h += "</table>";
-  h += "<p class='trade'>The <b>Brick</b> earns more per copy at a higher price point but is a harder sell and " +
-    "slower to produce. The <b>Compact</b> earns roughly £3 a copy at an impulse price. You are deliberately " +
-    "running both — this is the trade, every time you export.</p>";
+
+  h += "<p class='trade'>The <b>bigger book at a higher price</b> earns more per copy but is a harder sell and " +
+    "slower to produce. The <b>compact one</b> earns roughly £3 a copy at an impulse price. Running both is " +
+    "deliberate — this is the trade, every time you export.</p>";
   h += "<p class='dim small'>Rates last verified " + KDP_RATES.LAST_VERIFIED + " — edit KDP_RATES in core.js when Amazon revises them.</p>";
   return h;
+}
+
+function wirePriceInputs(plan) {
+  const pr = kdpPricing(plan);
+  for (const cur of ["GBP", "USD"]) {
+    const input = $("#p" + cur), out = $("#e" + cur);
+    if (!input) continue;
+    const update = function () {
+      const list = parseFloat(input.value);
+      if (!(list > 0)) { out.innerHTML = ""; return; }
+      const r = kdpRoyalty(list, pr.currencies[cur].print, cur);
+      const cls = r.flat60 <= 0 ? "bad" : "";
+      out.innerHTML = "<span class='" + cls + "'>" + money(r.flat60, cur) + " a copy</span>" +
+        "<span class='dim small'> at flat 60% · " + money(r.tiered, cur) + " at the tiered " +
+        Math.round(r.tierRate * 100) + "%</span>" +
+        (r.flat60 <= 0 ? "<br><span class='bad small'>Below the break-even price — KDP will not accept this.</span>" : "");
+    };
+    input.addEventListener("input", update);
+    update();
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -345,8 +415,7 @@ function getEngine() {
     })
   ]).then(function (res) {
     const src = res[0], lock = res[1];
-    if (!self.crypto || !self.crypto.subtle)
-      return { src: src, lock: lock, sha: null, unverified: true };
+    if (!self.crypto || !self.crypto.subtle) return { src: src, lock: lock, sha: null, unverified: true };
     return crypto.subtle.digest("SHA-256", new TextEncoder().encode(src)).then(function (buf) {
       const hex = Array.prototype.map.call(new Uint8Array(buf), function (b) {
         return ("0" + b.toString(16)).slice(-2);
@@ -366,7 +435,7 @@ const WORKER_TAIL =
   'var p = d.kind==="classic"?dealClassic(d.num,d.diff)' +
   ' : d.kind==="x"?dealX(d.num,d.diff) : d.kind==="hyper"?dealHyper(d.num,d.diff)' +
   ' : dealPuzzle(d.num,d.diff);' +
-  'postMessage({num:d.num,diff:d.diff,kind:d.kind,sol:Array.from(p.sol),' +
+  'postMessage({i:d.i,num:d.num,diff:d.diff,kind:d.kind,sol:Array.from(p.sol),' +
   'cages:p.cages,cageOf:Array.from(p.cageOf),given:Array.from(p.given)});};';
 
 function dealSync(kind, diff, num) {
@@ -376,7 +445,8 @@ function dealSync(kind, diff, num) {
   return Object.assign(dealPuzzle(num, diff), { kind: "killer" });
 }
 
-function dealPool(engineSrc, kind, diff, seedStart, count, onProgress) {
+/* seq[i] is the difficulty of puzzle i, so a book that climbs deals correctly. */
+function dealPool(engineSrc, kind, seq, seedStart, count, onProgress) {
   return new Promise(function (resolve, reject) {
     const out = new Array(count);
     let next = 0, done = 0;
@@ -401,19 +471,19 @@ function dealPool(engineSrc, kind, diff, seedStart, count, onProgress) {
       const tick = function () {
         if (next >= count) return;
         const idx = next++;
-        settle(idx, dealSync(kind, diff, seedStart + idx));
+        settle(idx, dealSync(kind, seq[idx], seedStart + idx));
         setTimeout(tick, 0);
       };
       return tick();
     }
     const feed = function (w) {
       if (next >= count) return false;
-      w._idx = next++;
-      w.postMessage({ num: seedStart + w._idx, diff: diff, kind: kind });
+      const i = next++;
+      w.postMessage({ i: i, num: seedStart + i, diff: seq[i], kind: kind });
       return true;
     };
     workers.forEach(function (w) {
-      w.onmessage = function (e) { const i = w._idx; settle(i, hydrate(e.data)); feed(w); };
+      w.onmessage = function (e) { settle(e.data.i, hydrate(e.data)); feed(w); };
       w.onerror = function (ev) {
         workers.forEach(function (x) { try { x.terminate(); } catch (e) {} });
         reject(new Error("A dealing worker failed: " + (ev.message || "unknown") + ". Reload and try again."));
@@ -433,12 +503,12 @@ function doExport() {
 
   const proof = $("#xProof").checked;
   const proofPages = parseInt($("#xProofPages").value, 10) || 24;
-  let plan, engineSrc;
+  const seq = kdpBandSequence(kdpBands(book));
+  let plan;
 
   setStatus(prog, "Checking the puzzle engine…");
   getEngine().then(function (eng) {
-    engineSrc = eng.src;
-    const chk = kdpLedgerCheck(LIB, id);      /* throws on an overlapping range */
+    const chk = kdpLedgerCheck(LIB, id);
     plan = kdpPlan(book.preset, book.puzzleCount);
     const errs = kdpWarnings(plan).filter(function (w) { return w.level === "error"; });
     if (errs.length) throw new Error(errs.map(function (w) { return w.text; }).join("\n\n"));
@@ -455,13 +525,15 @@ function doExport() {
         if (pg.items) for (const idx of pg.items) need = Math.max(need, idx + 1);
       }
     }
-    return dealPool(engineSrc, book.mode, book.difficulty, book.seedStart, need, function (d, t) {
+    return dealPool(eng.src, book.mode, seq, book.seedStart, need, function (d, t) {
       if (d % 4 === 0 || d === t) setStatus(prog, "Dealing " + d + " of " + t + "…");
     }).then(function (deck) { return { deck: deck, limit: limit }; });
   }).then(function (bundle) {
-    const label = DIFF_LABEL[book.difficulty] || book.difficulty;
+    const modeName = KDP_MODE_NAME[book.mode] || book.mode;
     const puzzles = bundle.deck.map(function (P, i) {
-      return { P: P, n: i + 1, label: "Puzzle " + (i + 1), solLabel: String(i + 1), diffLabel: label };
+      const label = diffName(seq[i]);
+      return { P: P, n: i + 1, label: "Puzzle " + (i + 1), solLabel: String(i + 1),
+               diffLabel: label, runHead: modeName + " · " + label };
     });
     const front = kdpDefaultFront(book.mode, book.difficulty, {
       title: $("#xTitle").value.trim() || book.title,
@@ -469,7 +541,8 @@ function doExport() {
       author: $("#xAuthor").value.trim() || undefined,
       isbn: $("#xIsbn").value.trim(),
       puzzleCount: book.puzzleCount,
-      year: new Date().getUTCFullYear()
+      year: new Date().getUTCFullYear(),
+      bands: kdpBands(book)
     });
     const solPage = plan.solutionStart;
     front.howto = front.howto.map(function (pg) {
@@ -483,7 +556,7 @@ function doExport() {
       bookId: id, mode: book.mode, diff: book.difficulty,
       seedStart: book.seedStart, seedEnd: book.seedEnd, puzzleCount: book.puzzleCount,
       puzzles: puzzles, front: front,
-      runningHead: (KDP_MODE_NAME[book.mode] || book.mode) + " · " + label,
+      runningHead: modeName + " · " + diffName(book.difficulty),
       seriesList: kdpSeriesList(LIB, id),
       trace: false
     };
@@ -500,7 +573,7 @@ function doExport() {
           setTimeout(function () {
             try {
               const outp = asm.finish();
-              const name = "zaney-" + id + "-preset" + plan.presetId +
+              const name = "zaney-" + id + "-" + plan.preset.trimId.replace(/\./g, "_") +
                 (proof ? "-PROOF-" + asm.total + "of" + plan.total + "pp" : "-" + plan.total + "pp") + ".pdf";
               const a = document.createElement("a");
               a.href = URL.createObjectURL(new Blob([outp.bytes], { type: "application/pdf" }));
@@ -532,29 +605,21 @@ function downloadLedger() {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(clean, null, 2) + "\n"], { type: "application/json" }));
   a.download = "books.json"; a.click();
-  setStatus($("#libMsg"), "Downloaded. Drop it into the repo root and commit it to keep the library.", "ok");
+  setStatus($("#libMsg"), "Downloaded. Drop it in the repo root and commit it to keep the library.", "ok");
 }
 
 function boot() {
   if (location.protocol === "file:") {
-    setStatus($("#engineStatus"),
-      "Open this over http, not file:// — the browser blocks the fetches it needs.", "bad");
+    setStatus($("#engineStatus"), "Open this over http, not file:// — the browser blocks the fetches it needs.", "bad");
     return;
   }
-
   getEngine().then(function (eng) {
-    if (eng.unverified) {
-      setStatus($("#engineStatus"), "engine not verified (needs https or localhost)", "warn");
-    } else {
-      setStatus($("#engineStatus"), "engine verified · <code>" + eng.sha.slice(0, 12) + "…</code>", "ok");
-    }
-  }).catch(function (e) {
-    setStatus($("#engineStatus"), esc(e.message), "bad");
-  });
+    if (eng.unverified) setStatus($("#engineStatus"), "engine not verified (needs https or localhost)", "warn");
+    else setStatus($("#engineStatus"), "engine verified · <code>" + eng.sha.slice(0, 12) + "…</code>", "ok");
+  }).catch(function (e) { setStatus($("#engineStatus"), esc(e.message), "bad"); });
 
   const stored = libLoad();
   if (stored) { LIB = stored; refresh(); return; }
-
   fetch("./books.json", { cache: "no-store" })
     .then(function (r) { return r.ok ? r.json() : {}; })
     .catch(function () { return {}; })
@@ -570,11 +635,29 @@ $("#btnReset").addEventListener("click", function () {
   try { localStorage.removeItem(LIB_KEY); } catch (e) {}
   LIB = {}; SELECTED = null; boot();
 });
-$("#fMode").addEventListener("change", syncDiffs);
-$("#fAlt").addEventListener("change", applyAltLock);
-$("#fPreset").addEventListener("change", function () {
-  if (!EDITING && !$("#fAlt").value) $("#fCount").value = KDP_PRESETS[$("#fPreset").value].defaultPuzzles;
+$("#btnAddBand").addEventListener("click", function () {
+  const last = bandRows().slice(-1)[0];
+  const ds = kdpValidDifficulties($("#fMode").value);
+  let nextDiff = ds[0];
+  if (last) {
+    const i = ds.indexOf(last.querySelector("select").value);
+    nextDiff = ds[Math.min(i + 1, ds.length - 1)];
+  }
+  addBandRow(nextDiff, 50);
 });
+$("#fMode").addEventListener("change", function () {
+  const mode = $("#fMode").value;
+  fillDiffSelect($("#fDiff"), mode, $("#fDiff").value);
+  bandRows().forEach(function (r) { fillDiffSelect(r.querySelector("select"), mode, r.querySelector("select").value); });
+  updatePreview();
+});
+$("#fTrim").addEventListener("change", updatePreview);
+$("#fLayout").addEventListener("change", updatePreview);
+$("#fDiff").addEventListener("change", updatePreview);
+$("#fCount").addEventListener("input", updatePreview);
+$("#fSingle").addEventListener("change", syncDiffMode);
+$("#fClimb").addEventListener("change", syncDiffMode);
+$("#fAlt").addEventListener("change", applyAltLock);
 $("#xProof").addEventListener("change", function () {
   $("#xProofRow").classList.toggle("hide", !$("#xProof").checked);
 });

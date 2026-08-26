@@ -34,24 +34,63 @@ python3 -m http.server 8777      # then open http://localhost:8777/
 **Library** lists your books. Click one to select it; the costs panel updates as
 you go.
 
-**+ New book** — give it a title, pick mode, difficulty, preset and how many
-puzzles. A seed range clear of everything else is chosen for you. Save.
+**+ New book** — title, puzzle type, trim size, how many puzzles fit on a page,
+and the difficulty. A seed range clear of everything else is picked for you, and
+the editor shows the page count and print cost before you save.
 
-* **Preset A "Brick"** — 5.06 × 7.81 in, one puzzle a page. The flagship format.
-  336 puzzles → 402 pages.
-* **Preset B "Compact"** — 8.5 × 11 in, two a page. Built to stay under KDP's
-  110-page flat printing fee. 160 puzzles → 110 pages, exactly at the ceiling.
-* **Preset C "Large Print"** — 8.5 × 11 in, one big grid a page.
+### Trim sizes
 
-**Large-print edition of** turns the new book into an alt edition: the same
-puzzles as an existing title, in a different format. Every other book must have
-a seed range of its own — the exporter refuses to deal an overlapping one,
-because repeated puzzles across your own catalogue get flagged by Amazon and
-noticed by reviewers.
+| size | category | notes |
+|---|---|---|
+| 5.06 × 7.81 in | REGULAR | the UK Su Doku title you are benchmarking |
+| 5.83 × 8.27 in | REGULAR | A5, commuter size |
+| 6 × 9 in | REGULAR | the popular middle ground — only just REGULAR, at the 6.12 × 9 limit |
+| 8.5 × 11 in | LARGE | the usual puzzle-book size, and what large print wants |
+
+Each pairs with **1 or 2 puzzles per page**, so there are eight formats. All
+eight clear the 5 pt legibility floor; the tightest is 5.06 × 7.81 at two a page,
+where solution digits land at 6.4 pt — legible, but small.
+
+There is no 4 × 6 pocket size because KDP does not print one: their smallest
+paperback trim is 5 × 8. A5 is the nearest thing.
+
+Adding another size is one row in `KDP_TRIMS` in `core.js`. Nothing else changes.
+
+### Books that get harder as they go
+
+Pick **Gets harder as it goes** and set as many levels as you like — say 100
+easy, 120 medium, 116 hard. The editor shows which puzzle numbers each level
+covers and the running total.
+
+The book then climbs: puzzle 1 is easy, puzzle 336 is hard. Every puzzle is
+labelled with its level at the top of its page, the running head along the top
+edge carries it too, and the front matter gets a page explaining the
+arrangement so a reader knows where they are rather than thinking the book is
+inconsistent.
+
+Seeds stay one contiguous run — puzzle *i* is always seed `seedStart + i`. The
+generator hashes difficulty into the seed, so the same seed at a different level
+is a different puzzle, and the band split is part of the book's identity as much
+as its range is.
+
+### Same puzzles, different size
+
+Under **Advanced**, "Same puzzles as" makes the new book a second edition of an
+existing one: identical puzzles, different trim. Everything else must have a
+seed range of its own — the exporter refuses to deal an overlapping one, because
+repeated puzzles across your own catalogue get flagged by Amazon and noticed by
+reviewers.
+
+### Exporting
 
 **Export PDF** deals the puzzles and builds the interior. Killer books are the
-slow ones: 336 grids take about a minute across the worker pool. Tick **proof
+slow ones — 336 grids take a minute or two across the worker pool. Tick **proof
 mode** to build only the first 24 pages when you just want to test a KDP upload.
+
+Every interior contains, in order: half title, copyright, a two-page how-to-play
+with the rules, a page about the difficulty, the puzzles with page numbers from
+the first one, a Solutions divider on a right-hand page, every solution, and a
+"more in the series" page.
 
 ## Where the library lives
 
@@ -102,7 +141,7 @@ python3 dev/sync-engine.py       --from ../zaneysudoku/index.html   # re-vendor
 cd dev && npm install && npm test
 ```
 
-115 checks: pagination and refusal guards, the page in jsdom, structural PDF
+135 checks: pagination and refusal guards, the page in jsdom, structural PDF
 verification including a bounds check of every drawing call against the mirrored
 live area, and the site's own solver run over a sample of printed puzzles.
 Preset A takes a few minutes because 336 killer grids have to be dealt.

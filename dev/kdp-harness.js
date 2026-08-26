@@ -33,7 +33,9 @@ const EXPORTS = [
   "hyperWin","dealPuzzle","dealClassic","dealX","dealHyper","countSolutions","countClassic",
   "KDP_PRESETS","KDP_RATES","KDP_LAYOUT","KDP_MODE_NAME","KDP_MARGIN_IN","KDP_IN",
   "kdpPlan","kdpPricing","kdpWarnings","kdpLiveArea","kdpTrimPt","kdpTrimCategory","kdpGutterIn",
-  "kdpAssembler","kdpDefaultFront","kdpLedgerCheck","kdpSeriesList","kdpFixup","kdpFitGrid","kdpUnsupportedChars","kdpCollectText"
+  "kdpAssembler","kdpDefaultFront","kdpLedgerCheck","kdpSeriesList","kdpFixup","kdpFitGrid",
+  "kdpUnsupportedChars","kdpCollectText","kdpBands","kdpBandSequence","kdpBandRanges","kdpBandTotal",
+  "kdpResolvePreset","KDP_TRIMS","KDP_LAYOUTS","kdpValidDifficulties"
 ];
 
 const mod = new Function(
@@ -65,6 +67,7 @@ function build(bookId, opts) {
   const ledger = mod.kdpLedgerCheck(books, bookId);
   const plan = mod.kdpPlan(book.preset, book.puzzleCount);
 
+  const seq = mod.kdpBandSequence(mod.kdpBands(book));   /* difficulty per puzzle */
   const t0 = Date.now();
   let deck = opts.deck || null;
   /* Test-harness convenience only: 336 killer grids take minutes to deal, and
@@ -74,7 +77,8 @@ function build(bookId, opts) {
   if (!deck && opts.deckFile && fs.existsSync(opts.deckFile)) {
     const raw = JSON.parse(fs.readFileSync(opts.deckFile, "utf8"));
     if (raw.mode === book.mode && raw.difficulty === book.difficulty &&
-        raw.seedStart === book.seedStart && raw.deck.length === book.puzzleCount) {
+        raw.seedStart === book.seedStart && raw.deck.length === book.puzzleCount &&
+        raw.bandKey === seq.join(",")) {
       deck = raw.deck.map(function (d) {
         return { num: d.num, diff: d.diff, kind: d.kind,
                  sol: Uint8Array.from(d.sol), cages: d.cages,
@@ -85,13 +89,14 @@ function build(bookId, opts) {
   if (!deck) {
     deck = [];
     for (let i = 0; i < book.puzzleCount; i++) {
-      deck.push(dealOne(book.mode, book.difficulty, book.seedStart + i));
+      deck.push(dealOne(book.mode, seq[i], book.seedStart + i));
       if (opts.onProgress && (i % 25 === 0 || i === book.puzzleCount - 1))
         opts.onProgress(i + 1, book.puzzleCount);
     }
     if (opts.deckFile) {
       fs.writeFileSync(opts.deckFile, JSON.stringify({
         mode: book.mode, difficulty: book.difficulty, seedStart: book.seedStart,
+        bandKey: seq.join(","),
         deck: deck.map(function (d) {
           return { num: d.num, diff: d.diff, kind: d.kind, sol: Array.from(d.sol),
                    cages: d.cages, cageOf: Array.from(d.cageOf), given: Array.from(d.given) };
@@ -101,13 +106,16 @@ function build(bookId, opts) {
   }
   const dealMs = Date.now() - t0;
 
-  const label = mod.DIFF_LABEL[book.difficulty] || book.difficulty;
+  const modeName = mod.KDP_MODE_NAME[book.mode] || book.mode;
   const puzzles = deck.map(function (P, i) {
-    return { P: P, n: i + 1, label: "Puzzle " + (i + 1), solLabel: String(i + 1), diffLabel: label };
+    const d = seq[i], label = mod.DIFF_LABEL[d] || d;
+    return { P: P, n: i + 1, label: "Puzzle " + (i + 1), solLabel: String(i + 1),
+             diffLabel: label, runHead: modeName + " · " + label };
   });
 
   const front = mod.kdpDefaultFront(book.mode, book.difficulty, {
-    title: book.title, puzzleCount: book.puzzleCount, year: 2026
+    title: book.title, puzzleCount: book.puzzleCount, year: 2026,
+    bands: mod.kdpBands(book)
   });
   const solPage = plan.solutionStart;
   front.howto = front.howto.map(function (pg) {
@@ -122,7 +130,7 @@ function build(bookId, opts) {
     bookId: bookId, mode: book.mode, diff: book.difficulty,
     seedStart: book.seedStart, seedEnd: book.seedEnd, puzzleCount: book.puzzleCount,
     puzzles: puzzles, front: front,
-    runningHead: (mod.KDP_MODE_NAME[book.mode] || book.mode) + " · " + label,
+    runningHead: modeName + " · " + (mod.DIFF_LABEL[book.difficulty] || book.difficulty),
     seriesList: mod.kdpSeriesList(books, bookId),
     trace: true
   };
