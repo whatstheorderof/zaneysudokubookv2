@@ -1,0 +1,1174 @@
+/* ==========================================================================
+   KDP print-interior exporter — pure logic.
+
+   No DOM access anywhere in this file, deliberately. It is loaded as a plain
+   script by index.html and concatenated with engine.js by the Node test
+   harness, so the browser and the tests run the same bytes. There is no
+   second copy of any of this.
+
+   Everything geometric derives from KDP_PRESETS. Adding a fourth trim size is
+   a new object in that table, not a code change.
+   ========================================================================== */
+
+const KDP_IN = 72;                       /* points per inch */
+
+/* ---------------------------------------------------------------------------
+   RATES — printing costs and royalty rules.
+
+   LAST VERIFIED: 2026-08-24, against KDP's published paperback printing
+   costs. AMAZON REVISES THESE. Re-check at title setup and edit here; nothing
+   else in the file hardcodes a price.
+
+   Trim category is derived, not declared: REGULAR is width <= 6.12in AND
+   height <= 9in, everything else is LARGE.
+
+   UK figures are approximate conversions. The UK LARGE per-page rate in
+   particular is UNVERIFIED and is flagged as such in the UI — confirm it in
+   KDP's own calculator before pricing a large-trim title for the UK store.
+
+   Royalty: two models are reported side by side, because they disagree.
+     flat60  — 60% of list minus print cost at every price. This is what I
+               believe KDP actually pays for paperback on Amazon marketplaces.
+     tiered  — 60% at/above the threshold, 50% below. This is the rule as
+               originally specced; it is the Kindle ebook tier structure and
+               probably does not apply to paperback. Kept so the readout shows
+               the gap rather than silently picking one.
+   Expanded Distribution (40%) is deliberately not modelled — it is off.
+--------------------------------------------------------------------------- */
+const KDP_RATES = {
+  LAST_VERIFIED: "2026-08-24",
+  print: {
+    REGULAR: {
+      USD: { flatMax: 110, flat: 2.30, base: 1.00, perPage: 0.012, verified: true  },
+      GBP: { flatMax: 110, flat: 1.93, base: 0.85, perPage: 0.010, verified: true  }
+    },
+    LARGE: {
+      USD: { flatMax: 110, flat: 2.84, base: 1.00, perPage: 0.017, verified: true  },
+      GBP: { flatMax: 110, flat: 2.40, base: 0.85, perPage: 0.014, verified: false }
+    }
+  },
+  royalty: {
+    flat: 0.60,
+    tierRate: { above: 0.60, below: 0.50 },
+    tierThreshold: { USD: 9.99, GBP: 7.99 }   /* GBP "equivalent" is a guess */
+  },
+  spinePerPageIn: 0.002252,                   /* white paper */
+  coverBleedIn: 0.25,
+  minInteriorPages: 24,
+  maxInteriorPages: 828
+};
+
+/* ---------------------------------------------------------------------------
+   PRESETS. Add a fourth by adding an object here.
+--------------------------------------------------------------------------- */
+const KDP_PRESETS = {
+  A: {
+    id: "A", name: "Brick", blurb: "flagship volumes",
+    trimIn: [5.06, 7.81],
+    puzzlesPerPage: 1, puzzleCols: 1, puzzleRows: 1,
+    solsPerPage: 6,    solCols: 2,    solRows: 3,
+    defaultPuzzles: 336,
+    flatFeeTarget: false,   /* a Brick is always past the flat-fee tier — that is the format */
+    pricePoints: { GBP: [10.99, 12.99, 14.99], USD: [12.99, 14.99, 16.99] }
+  },
+  B: {
+    id: "B", name: "Compact", blurb: "short-run volume SKUs",
+    trimIn: [8.5, 11],
+    puzzlesPerPage: 2, puzzleCols: 1, puzzleRows: 2,
+    solsPerPage: 8,    solCols: 2,    solRows: 4,
+    defaultPuzzles: 160,
+    flatFeeTarget: true,    /* staying under the flat-fee ceiling is the whole point */
+    pricePoints: { GBP: [7.99, 9.99, 11.99], USD: [9.99, 11.99, 13.99] }
+  },
+  C: {
+    id: "C", name: "Large Print", blurb: "accessibility SKUs, own listing",
+    trimIn: [8.5, 11],
+    puzzlesPerPage: 1, puzzleCols: 1, puzzleRows: 1,
+    solsPerPage: 6,    solCols: 2,    solRows: 3,
+    defaultPuzzles: 84,
+    flatFeeTarget: true,
+    pricePoints: { GBP: [8.99, 9.99, 11.99], USD: [10.99, 12.99, 14.99] }
+  }
+};
+
+/* Gutter widens with the block; the tier depends on the FINAL page count, so
+   pagination has to be settled before any layout happens. */
+const KDP_GUTTER_TIERS = [
+  { min:  24, max: 150, gutterIn: 0.375 },
+  { min: 151, max: 300, gutterIn: 0.5   },
+  { min: 301, max: 500, gutterIn: 0.625 },
+  { min: 501, max: 700, gutterIn: 0.75  }
+];
+
+const KDP_MARGIN_IN = 0.4;    /* top / bottom / outside. KDP minimum is 0.25 */
+/* Floor under the gutter. Set to 0 to use KDP's tier values verbatim, which
+   at 24–150pp would make the binding margin (0.375) NARROWER than the outer
+   margin (0.4) — legal, but backwards for a bound book. */
+const KDP_GUTTER_FLOOR_IN = KDP_MARGIN_IN;
+
+const KDP_LAYOUT = {
+  runHeadPt: 7, runHeadTrack: 0.7,
+  titlePt: 11, folioPt: 8,
+  noteStripIn: 0.3,
+  headBlockPt: 34,            /* running head + puzzle title above the grid  */
+  footBlockPt: 12,            /* folio band at the foot of the live area     */
+  solLabelPt: 8, solColGapPt: 16, solRowGapPt: 8,
+  minTypePt: 5,               /* legibility floor — hard abort below this    */
+  boxLineW: 1.1, cellLineW: 0.35, cageLineW: 0.5,
+  givenRatio: 0.60, solRatio: 0.56, cageRatio: 0.30,
+  tint: 236                   /* light region tint for Sudoku X / Hyper      */
+};
+
+/* ---------------------------------------------------------------------------
+   Geometry
+--------------------------------------------------------------------------- */
+function kdpTrimPt(preset){ return [preset.trimIn[0]*KDP_IN, preset.trimIn[1]*KDP_IN]; }
+
+function kdpTrimCategory(preset){
+  const [w,h] = preset.trimIn;
+  return (w <= 6.12 && h <= 9) ? "REGULAR" : "LARGE";
+}
+
+function kdpGutterIn(pageCount){
+  for(const t of KDP_GUTTER_TIERS)
+    if(pageCount >= t.min && pageCount <= t.max)
+      return {min:t.min, max:t.max, tierIn:t.gutterIn,
+              gutterIn: Math.max(t.gutterIn, KDP_GUTTER_FLOOR_IN)};
+  if(pageCount < KDP_RATES.minInteriorPages)
+    throw new Error("This book comes to "+pageCount+" pages. KDP will not accept an interior under "+
+      KDP_RATES.minInteriorPages+" pages — add more puzzles, or use a preset with fewer per page.");
+  throw new Error("No gutter tier covers "+pageCount+" pages (tiers run "+
+                  KDP_GUTTER_TIERS[0].min+"–"+KDP_GUTTER_TIERS[KDP_GUTTER_TIERS.length-1].max+"). "+
+                  "Reduce the puzzle count or add a tier to KDP_GUTTER_TIERS.");
+}
+
+/* THE mirroring primitive. Odd pages are rectos: the wide gutter margin is on
+   the LEFT. Even pages are versos: it is on the RIGHT. Every single drawing
+   call in the interior takes its box from here — nothing is ever centred on
+   the physical page, only inside the live area this returns. */
+function kdpLiveArea(preset, pageNo, gutterIn){
+  const [W,H] = kdpTrimPt(preset);
+  const m = KDP_MARGIN_IN*KDP_IN, g = gutterIn*KDP_IN;
+  const recto = (pageNo % 2) === 1;
+  return {
+    x: recto ? g : m,
+    y: m,
+    w: W - m - g,
+    h: H - 2*m,
+    recto: recto,
+    outerX: recto ? (W - m) : m,          /* outer edge, for folio + head */
+    outerAlign: recto ? "right" : "left"
+  };
+}
+
+/* ---------------------------------------------------------------------------
+   Pagination. Runs to completion before anything is laid out or dealt.
+--------------------------------------------------------------------------- */
+function kdpPlan(presetId, puzzleCount){
+  const P = KDP_PRESETS[presetId];
+  if(!P) throw new Error("Unknown preset "+presetId);
+  if(!(puzzleCount > 0)) throw new Error("Puzzle count must be positive");
+
+  const pages = [];
+  const push = (kind, extra) => { pages.push(Object.assign({kind, folio:false}, extra||{})); };
+
+  push("halftitle"); push("copyright");
+  push("howto", {part:1}); push("howto", {part:2});
+  push("about"); push("blank", {reason:"front-matter pad"});
+
+  const puzPages = Math.ceil(puzzleCount / P.puzzlesPerPage);
+  for(let i=0;i<puzPages;i++){
+    const items = [];
+    for(let k=0;k<P.puzzlesPerPage;k++){
+      const idx = i*P.puzzlesPerPage + k;
+      if(idx < puzzleCount) items.push(idx);
+    }
+    push("puzzles", {items, folio:true, slotCount:P.puzzlesPerPage});
+  }
+
+  /* The divider has to land on a recto. Its page number would be pages.length+1;
+     if that is even, slip a blank in front of it. */
+  let filler = 0;
+  if(((pages.length + 1) % 2) === 0){ push("blank", {reason:"recto filler"}); filler = 1; }
+  const dividerPage = pages.length + 1;
+  push("divider");
+  push("blank", {reason:"divider verso"});
+
+  const solPages = Math.ceil(puzzleCount / P.solsPerPage);
+  const solStart = pages.length + 1;
+  for(let i=0;i<solPages;i++){
+    const items = [];
+    for(let k=0;k<P.solsPerPage;k++){
+      const idx = i*P.solsPerPage + k;
+      if(idx < puzzleCount) items.push(idx);
+    }
+    push("solutions", {items, folio:true, slotCount:P.solsPerPage});
+  }
+
+  /* Back matter: series page at last-1, blank at last, total even. Padding goes
+     BEFORE the series page so it keeps its position (and stays on a recto). */
+  let pad = 0;
+  if(pages.length % 2 === 1){ push("blank", {reason:"even-total pad"}); pad = 1; }
+  push("series");
+  push("blank", {reason:"final blank"});
+
+  const total = pages.length;
+  if(total % 2 !== 0) throw new Error("Pagination bug: odd total "+total);
+  if(((dividerPage) % 2) !== 1) throw new Error("Pagination bug: divider on verso");
+
+  const tier = kdpGutterIn(total);
+
+  return {
+    presetId, preset:P, puzzleCount, pages, total,
+    puzzlePages: puzPages, solutionPages: solPages,
+    puzzleStart: 7, dividerPage, solutionStart: solStart,
+    recotFiller: filler, evenPad: pad,
+    gutterIn: tier.gutterIn, gutterTier: tier,
+    category: kdpTrimCategory(P)
+  };
+}
+
+/* ---------------------------------------------------------------------------
+   Pricing readout
+--------------------------------------------------------------------------- */
+function kdpSpineIn(pages){ return pages * KDP_RATES.spinePerPageIn; }
+
+function kdpCoverIn(preset, pages){
+  const [w,h] = preset.trimIn, s = kdpSpineIn(pages), b = KDP_RATES.coverBleedIn;
+  return { w: 2*w + s + b, h: h + b, spine: s };
+}
+
+function kdpPrintCost(category, pages, cur){
+  const r = KDP_RATES.print[category][cur];
+  const cost = (pages <= r.flatMax) ? r.flat : (r.base + r.perPage*pages);
+  return { cost, flat: pages <= r.flatMax, verified: r.verified, rate: r };
+}
+
+function kdpRoyalty(list, cost, cur){
+  const R = KDP_RATES.royalty;
+  const tierRate = list >= R.tierThreshold[cur] ? R.tierRate.above : R.tierRate.below;
+  return {
+    list,
+    flat60:  R.flat*list - cost,
+    tiered:  tierRate*list - cost,
+    tierRate
+  };
+}
+
+function kdpPricing(plan){
+  const P = plan.preset, pages = plan.total, cat = plan.category;
+  const out = { pages, category: cat, cover: kdpCoverIn(P, pages), currencies: {} };
+  out.spineIn = out.cover.spine;
+  out.spineCm = out.spineIn * 2.54;
+  for(const cur of ["USD","GBP"]){
+    const pc = kdpPrintCost(cat, pages, cur);
+    const R  = KDP_RATES.royalty;
+    out.currencies[cur] = {
+      print: pc.cost,
+      flatFee: pc.flat,
+      verified: pc.verified,
+      minListFlat60: pc.cost / R.flat,
+      minListTiered: pc.cost / R.tierRate.below,
+      points: (P.pricePoints[cur]||[]).map(p => kdpRoyalty(p, pc.cost, cur))
+    };
+  }
+  return out;
+}
+
+/* Warnings the exporter surfaces before it will deal anything. */
+function kdpWarnings(plan){
+  const w = [];
+  const cur = KDP_RATES.print[plan.category].USD;
+  if(plan.total < KDP_RATES.minInteriorPages)
+    w.push({level:"error", text:"KDP will not accept an interior under "+KDP_RATES.minInteriorPages+
+      " pages. This one is "+plan.total+"."});
+  if(plan.total > KDP_RATES.maxInteriorPages)
+    w.push({level:"error", text:"Interior is "+plan.total+" pages; KDP's ceiling is "+KDP_RATES.maxInteriorPages+"."});
+
+  /* The flat-fee cliff. Only presets that exist to stay under it are policed
+     against it — a Brick is always past 110 pages and that is not a fault. */
+  if(plan.preset.flatFeeTarget){
+    if(plan.total > cur.flatMax){
+      /* Pages saved per puzzle removed: one puzzle page slot plus one solution slot. */
+      const perPuzzle = 1/plan.preset.puzzlesPerPage + 1/plan.preset.solsPerPage;
+      const over = plan.total - cur.flatMax;
+      const drop = Math.ceil(over / perPuzzle);
+      w.push({level:"warn", loud:true, text:
+        "OVER THE FLAT-FEE THRESHOLD. "+plan.total+" pages is "+over+" past "+cur.flatMax+
+        ", so printing switches from a flat fee to per-page and every copy costs more. "+
+        "Drop about "+drop+" puzzles — try "+Math.max(1, plan.puzzleCount-drop)+
+        " — to get back under. This threshold is the entire reason this preset exists."});
+    } else if(plan.total === cur.flatMax){
+      w.push({level:"warn", text:
+        "Sitting exactly on the "+cur.flatMax+"-page flat-fee ceiling with zero slack. "+
+        "One more puzzle page, one extra line of front matter, or a second series page "+
+        "tips this into per-page printing."});
+    } else if(cur.flatMax - plan.total <= 4){
+      w.push({level:"warn", text:
+        "Only "+(cur.flatMax-plan.total)+" pages of headroom under the "+cur.flatMax+"-page flat-fee ceiling."});
+    }
+  } else if(plan.total > cur.flatMax){
+    w.push({level:"note", text:
+      "Past the "+cur.flatMax+"-page flat-fee tier, so printing is per-page. Expected for this preset."});
+  }
+  if(!KDP_RATES.print[plan.category].GBP.verified)
+    w.push({level:"note", text:
+      "UK "+plan.category.toLowerCase()+"-trim printing rate is UNVERIFIED — confirm in KDP's own calculator at title setup."});
+  return w;
+}
+
+/* ---------------------------------------------------------------------------
+   Grid fitting and the legibility floor.
+
+   Note on the fallback: shrinking a grid makes its type SMALLER, so "reduce
+   the grid and re-fit" cannot rescue undersized digits. The only real lever is
+   to give the grid MORE room, so this reclaims the reserved note strip a bit
+   at a time before giving up. If the grid is already at the live-area limit
+   and type is still under the floor, it returns ok:false and the caller aborts
+   the export naming the preset/mode combination.
+--------------------------------------------------------------------------- */
+function kdpFitGrid(availW, availH, reserve, opts){
+  opts = opts || {};
+  /* The heaviest border is centred on the grid outline, so half of it falls
+     outside the nominal box. Hold that back on every side. */
+  const bleed = KDP_LAYOUT.boxLineW;
+  availW = availW - bleed;
+  availH = availH - bleed;
+  let res = reserve;
+  for(;;){
+    const grid = Math.min(availW, availH - res);
+    const cell = grid/9;
+    const sizes = [];
+    if(opts.given)  sizes.push(cell*KDP_LAYOUT.givenRatio);
+    if(opts.sol)    sizes.push(cell*KDP_LAYOUT.solRatio);
+    if(opts.cages)  sizes.push(cell*KDP_LAYOUT.cageRatio);
+    const smallest = sizes.length ? Math.min.apply(null, sizes) : 99;
+    if(grid > 0 && smallest >= KDP_LAYOUT.minTypePt)
+      return { grid, cell, reserve: res, smallest, ok: true };
+    if(res <= 0)
+      return { grid, cell, reserve: 0, smallest, ok: false };
+    res = Math.max(0, res - 2);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Vector grid drawing, in points. This is the existing pdfGrid, moved off mm
+   and off A4 onto preset-driven geometry, with print line weights.
+--------------------------------------------------------------------------- */
+function kdpDrawGrid(ctx, P, x, y, size, opt){
+  const doc = ctx.doc, cell = size/9;
+  const L = KDP_LAYOUT;
+
+  if(opt.tints && P.kind === "x"){
+    doc.setFillColor(L.tint, L.tint, L.tint);
+    for(let i=0;i<9;i++){
+      ctx.rect(x+i*cell, y+i*cell, cell, cell, "F");
+      if(8-i !== i) ctx.rect(x+(8-i)*cell, y+i*cell, cell, cell, "F");
+    }
+  }
+  if(opt.tints && P.kind === "hyper"){
+    doc.setFillColor(L.tint, L.tint, L.tint);
+    for(const rc of [[1,1],[1,5],[5,1],[5,5]])
+      ctx.rect(x+rc[1]*cell, y+rc[0]*cell, 3*cell, 3*cell, "F");
+  }
+
+  doc.setDrawColor(0);
+  for(let i=0;i<=9;i++){
+    doc.setLineWidth(i%3===0 ? L.boxLineW : L.cellLineW);
+    ctx.line(x+i*cell, y, x+i*cell, y+size);
+    ctx.line(x, y+i*cell, x+size, y+i*cell);
+  }
+
+  if(opt.cages && P.cages && P.cages.length){
+    const inset = cell*0.085;
+    doc.setDrawColor(70);
+    doc.setLineWidth(L.cageLineW);
+    doc.setLineDashPattern([cell*0.09, cell*0.075], 0);
+    const diffAt = (i,j) => j<0 || P.cageOf[i] !== P.cageOf[j];
+    for(let i=0;i<81;i++){
+      const r=(i/9)|0, c=i%9, cx=x+c*cell, cy=y+r*cell;
+      const up=diffAt(i, r>0?i-9:-1), dn=diffAt(i, r<8?i+9:-1),
+            lf=diffAt(i, c>0?i-1:-1), rt=diffAt(i, c<8?i+1:-1);
+      if(up) ctx.line(cx+(lf?inset:0), cy+inset, cx+cell-(rt?inset:0), cy+inset);
+      if(dn) ctx.line(cx+(lf?inset:0), cy+cell-inset, cx+cell-(rt?inset:0), cy+cell-inset);
+      if(lf) ctx.line(cx+inset, cy+(up?inset:0), cx+inset, cy+cell-(dn?inset:0));
+      if(rt) ctx.line(cx+cell-inset, cy+(up?inset:0), cx+cell-inset, cy+cell-(dn?inset:0));
+    }
+    doc.setLineDashPattern([], 0);
+
+    const sumPt = cell*L.cageRatio;
+    doc.setFont(KDP_FONT_FAMILY, "bold");
+    doc.setFontSize(sumPt);
+    doc.setTextColor(40,40,40);
+    for(const g of P.cages){
+      const a = g.cells[0], r=(a/9)|0, c=a%9;
+      const s = String(g.sum);
+      const tx = x+c*cell+inset*2.0, ty = y+r*cell+inset*1.3;
+      const w = doc.getTextWidth(s);
+      doc.setFillColor(255,255,255);
+      ctx.rect(tx-sumPt*0.14, ty, w+sumPt*0.28, sumPt*1.02, "F");
+      ctx.text(s, tx, ty+sumPt*0.52, {baseline:"middle"});
+    }
+    doc.setDrawColor(0);
+  }
+
+  for(let i=0;i<81;i++){
+    const r=(i/9)|0, c=i%9;
+    if(P.given[i]){
+      doc.setTextColor(0,0,0);
+      doc.setFont(KDP_FONT_FAMILY, "bold");
+      doc.setFontSize(cell*L.givenRatio);
+      ctx.text(String(P.sol[i]), x+c*cell+cell/2, y+r*cell+cell*0.55, {align:"center", baseline:"middle"});
+    } else if(opt.withSol){
+      doc.setTextColor(20,20,20);
+      doc.setFont(KDP_FONT_FAMILY, "normal");
+      doc.setFontSize(cell*L.solRatio);
+      ctx.text(String(P.sol[i]), x+c*cell+cell/2, y+r*cell+cell*0.55, {align:"center", baseline:"middle"});
+    }
+  }
+  doc.setTextColor(0,0,0);
+  doc.setFont(KDP_FONT_FAMILY, "normal");
+}
+
+/* ---------------------------------------------------------------------------
+   Front matter. Adapted from the site's own how-to-play and MODE_RULES copy,
+   rewritten for print: no taps, no keyboard shortcuts, no references to the
+   app. Every field is overridable from the export form.
+--------------------------------------------------------------------------- */
+const KDP_MODE_NAME = { killer:"Killer Sudoku", classic:"Classic Sudoku", x:"Sudoku X", hyper:"Hyper Sudoku" };
+
+const KDP_HOWTO = {
+  killer: [
+    [
+      {t:"h1", s:"How to play killer sudoku"},
+      {t:"p",  s:"Killer sudoku is ordinary sudoku with one twist: there are almost never any starting digits. Instead the grid is carved into dashed cages, and each cage tells you what its digits add up to."},
+      {t:"h2", s:"The rules"},
+      {t:"li", s:"Every row, every column and every 3×3 box contains the digits 1 to 9, exactly once each."},
+      {t:"li", s:"The digits inside each dashed cage add up to the small number printed in its top-left corner."},
+      {t:"li", s:"A digit cannot repeat inside a cage."},
+      {t:"p",  s:"That is the whole game. Everything after this is deduction."}
+    ],
+    [
+      {t:"h2", s:"Three things worth knowing"},
+      {t:"lead", lead:"Learn the forced combinations. ", s:"A two-cell cage summing to 3 can only be 1+2. Sum 4 is 1+3. Sum 16 is 7+9, and 17 is 8+9. Those are free squares — fill them in first and the rest of the grid opens up around them."},
+      {t:"lead", lead:"Use the rule of 45. ", s:"Every row, every column and every 3×3 box sums to 45. If the cages covering a box total 43 with a single cell poking out beyond it, that overflow is the value of the cell. Innies and outies win more killer puzzles than raw arithmetic does."},
+      {t:"lead", lead:"Pencil marks are not cheating. ", s:"Every puzzle in this book has a blank strip beneath it for working. Use it. Writing down the candidates for a cage is how you find the pair that solves it."},
+      {t:"h2", s:"About the puzzles"},
+      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution. There are no broken puzzles here and no ambiguous endings. If you are stuck, you are stuck on something that is genuinely there."},
+      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+    ]
+  ],
+  classic: [
+    [
+      {t:"h1", s:"How to play classic sudoku"},
+      {t:"p",  s:"No cages, no diagonals, no extra regions. Fill every row, every column and every 3×3 box with the digits 1 to 9, once each. This is the original, and it is still the best one."},
+      {t:"h2", s:"The rules"},
+      {t:"li", s:"Each of the nine rows contains 1 to 9 with no repeats."},
+      {t:"li", s:"Each of the nine columns contains 1 to 9 with no repeats."},
+      {t:"li", s:"Each of the nine 3×3 boxes contains 1 to 9 with no repeats."},
+      {t:"p",  s:"A digit already printed in the grid is a given. It never changes."}
+    ],
+    [
+      {t:"h2", s:"Three things worth knowing"},
+      {t:"lead", lead:"Scan before you write. ", s:"Pick a digit and look for the boxes where it has only one legal home. Working one digit at a time across the whole grid finds more placements, faster, than working one cell at a time."},
+      {t:"lead", lead:"Hidden singles beat naked ones. ", s:"A cell with only one candidate left is easy to spot. A digit with only one possible cell left in a row is harder to spot and appears far more often. Look for the second kind."},
+      {t:"lead", lead:"Pencil marks are not cheating. ", s:"Every puzzle in this book has a blank strip beneath it for working. When scanning stops producing placements, write the candidates down — pairs and triples only become visible once they are on the page."},
+      {t:"h2", s:"About the puzzles"},
+      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution. There are no broken puzzles here and no ambiguous endings."},
+      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+    ]
+  ],
+  x: [
+    [
+      {t:"h1", s:"How to play Sudoku X"},
+      {t:"p",  s:"Classic sudoku plus one extra rule: both shaded diagonals must also contain the digits 1 to 9, once each. Two more regions, and a very different puzzle."},
+      {t:"h2", s:"The rules"},
+      {t:"li", s:"Every row, every column and every 3×3 box contains 1 to 9 with no repeats."},
+      {t:"li", s:"Both shaded diagonals — corner to corner, in each direction — also contain 1 to 9 with no repeats."},
+      {t:"p",  s:"The shading is there to help you see the diagonals. It carries no other meaning."}
+    ],
+    [
+      {t:"h2", s:"Three things worth knowing"},
+      {t:"lead", lead:"Start at the centre. ", s:"The middle cell sits on both diagonals at once, so it is constrained by four regions rather than three. It is almost always the most productive cell on the grid."},
+      {t:"lead", lead:"The diagonals cut through the corners. ", s:"Each corner box holds three diagonal cells. That makes the four corner boxes far more constrained than they look, and they are usually where a stuck grid breaks open."},
+      {t:"lead", lead:"Treat a diagonal as a row. ", s:"Everything you know about scanning a row applies to it — hidden singles, pairs, the lot. The only difference is that it crosses five boxes instead of three."},
+      {t:"h2", s:"About the puzzles"},
+      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution, using the diagonal constraint. There are no broken puzzles here."},
+      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+    ]
+  ],
+  hyper: [
+    [
+      {t:"h1", s:"How to play Hyper Sudoku"},
+      {t:"p",  s:"Classic sudoku with four extra shaded 3×3 windows, each of which must also contain the digits 1 to 9. Thirteen regions on a nine-by-nine grid."},
+      {t:"h2", s:"The rules"},
+      {t:"li", s:"Every row, every column and every 3×3 box contains 1 to 9 with no repeats."},
+      {t:"li", s:"Each of the four shaded windows also contains 1 to 9 with no repeats."},
+      {t:"p",  s:"The windows overlap the ordinary boxes rather than replacing them. A cell inside a window belongs to both."}
+    ],
+    [
+      {t:"h2", s:"Three things worth knowing"},
+      {t:"lead", lead:"Work the overlaps. ", s:"A cell inside a shaded window answers to four regions at once — row, column, box and window. Those cells fall first, and they take the rest of the window with them."},
+      {t:"lead", lead:"Mind the gaps. ", s:"The row and column between the windows belong to no window at all. They are the least constrained lines on the grid and are usually the last to fill."},
+      {t:"lead", lead:"A window is just another box. ", s:"Scan it the same way: pick a digit, find the cells it cannot occupy, see what is left. Thirteen regions means thirteen chances to find a hidden single."},
+      {t:"h2", s:"About the puzzles"},
+      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution, using the window constraint. There are no broken puzzles here."},
+      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+    ]
+  ]
+};
+
+/* Difficulty copy is generated from the same tables the generator uses, so it
+   cannot describe a book it did not produce. */
+function kdpAboutDifficulty(mode, diff){
+  const label = (typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[diff]) || diff;
+  const mins  = (typeof PAR !== "undefined" && PAR[mode] && PAR[mode][diff])
+                  ? Math.round(PAR[mode][diff]/60) : null;
+  const blocks = [{t:"h1", s:"About this difficulty"}];
+  const tone = {
+    easy:      "This is the gentle end. Expect steady progress and few dead ends — a puzzle you can finish in one sitting without writing much down.",
+    medium:    "The middle of the range. Scanning will get you a good way in, then you will need to start writing candidates down to finish.",
+    hard:      "Properly hard. There will be points where no digit is immediately placeable and the only way forward is through the candidates.",
+    expert:    "For solvers who already finish hard puzzles reliably. Long chains of deduction, and stretches where progress comes one cell at a time.",
+    nightmare: "The top of the range, and not an exaggeration. These are built to resist. Set aside an evening and expect to leave one unfinished occasionally.",
+    cowards:   "Every puzzle here can be solved one obvious step at a time, start to finish. There is never a moment where you must guess or write out candidates — if you cannot see the next move, it is there and you have missed it."
+  };
+  blocks.push({t:"p", s:(mode==="killer"?"Killer sudoku, ":mode==="x"?"Sudoku X, ":mode==="hyper"?"Hyper sudoku, ":"Classic sudoku, ")+
+                        String(label).toLowerCase()+". "+(tone[diff]||"")});
+
+  if(mode === "killer" && typeof DIFF_CFG !== "undefined" && DIFF_CFG[diff]){
+    const sz = DIFF_CFG[diff].sizes;
+    blocks.push({t:"p", s:"Cages in this volume run from "+Math.min.apply(null,sz)+" to "+
+      Math.max.apply(null,sz)+" cells. "+(DIFF_CFG[diff].reveal
+        ? "A handful of digits are given to start you off."
+        : "No starting digits are given — every cell is deduced from the cage sums.")});
+  } else if(mode === "classic" && typeof CLASSIC_CLUES !== "undefined" && CLASSIC_CLUES[diff]){
+    blocks.push({t:"p", s:"Puzzles at this level start from around "+CLASSIC_CLUES[diff]+" given digits."});
+  } else if(mode === "x" && typeof X_CLUES !== "undefined" && X_CLUES[diff]){
+    blocks.push({t:"p", s:"Puzzles at this level start from around "+X_CLUES[diff]+" given digits, before the diagonals are taken into account."});
+  } else if(mode === "hyper" && typeof H_CLUES !== "undefined" && H_CLUES[diff]){
+    blocks.push({t:"p", s:"Puzzles at this level start from around "+H_CLUES[diff]+" given digits, before the windows are taken into account."});
+  }
+  if(mins) blocks.push({t:"p", s:"Our own target time for a puzzle at this level is about "+mins+" minutes. It is a benchmark, not a judgement — nobody is timing you."});
+  blocks.push({t:"p", s:"Difficulty is set by how the grid is built, not by how it looks. Every puzzle in this book sits at the same level, so the last one is no harder than the first."});
+  return blocks;
+}
+
+function kdpDefaultFront(mode, diff, opts){
+  opts = opts || {};
+  const year = opts.year || 2026;
+  const modeName = KDP_MODE_NAME[mode] || "Sudoku";
+  const label = (typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[diff]) || diff;
+  return {
+    title:    opts.title || (modeName+": "+label),
+    subtitle: opts.subtitle || (opts.puzzleCount ? opts.puzzleCount+" puzzles, every one verified" : ""),
+    imprint:  opts.imprint || "Zaney Sudoku",
+    author:   opts.author  || "zaney.dev",
+    isbn:     opts.isbn    || "",
+    site:     opts.site    || "zaneysudoku.com",
+    copyright: opts.copyright || [
+      "Copyright © "+year+" "+(opts.author||"zaney.dev"),
+      "All rights reserved. No part of this publication may be reproduced, distributed or transmitted in any form or by any means without the prior written permission of the publisher, except for brief quotations in a review.",
+      "Puzzles generated and verified by the Zaney Sudoku engine. Every puzzle in this volume has been machine-checked to have exactly one solution.",
+      "First edition."
+    ],
+    howto: KDP_HOWTO[mode] || KDP_HOWTO.classic,
+    about: kdpAboutDifficulty(mode, diff)
+  };
+}
+
+/* ---------------------------------------------------------------------------
+   Drawing context. Every mark goes through here so the validator can walk the
+   drawing calls afterwards and bounds-check them against the mirrored live
+   area, rather than eyeballing a render.
+--------------------------------------------------------------------------- */
+const KDP_FONT_FAMILY = "Inter";
+
+function kdpCtx(doc, trace){
+  return {
+    doc: doc,
+    page: 1,
+    marks: trace ? [] : null,
+    trace: !!trace,
+    _m: function(x,y,w,h,stroked){ if(this.marks) this.marks.push({page:this.page, x:x, y:y, w:Math.max(w,0), h:Math.max(h,0), s:!!stroked}); },
+    line: function(x1,y1,x2,y2){
+      this.doc.line(x1,y1,x2,y2);
+      this._m(Math.min(x1,x2), Math.min(y1,y2), Math.abs(x2-x1), Math.abs(y2-y1), true);
+    },
+    rect: function(x,y,w,h,style){
+      this.doc.rect(x,y,w,h,style);
+      this._m(x,y,w,h, style !== "F");
+    },
+    circle: function(x,y,r,style){
+      this.doc.circle(x,y,r,style);
+      this._m(x-r, y-r, 2*r, 2*r, style !== "F");
+    },
+    text: function(str,x,y,o){
+      o = o||{};
+      this.doc.text(str,x,y,o);
+      if(!this.marks) return;
+      const size = this.doc.getFontSize();
+      const w = this.doc.getTextWidth(str);
+      const tx = o.align==="center" ? x-w/2 : o.align==="right" ? x-w : x;
+      const ty = o.baseline==="middle" ? y-size*0.5
+               : o.baseline==="top"    ? y
+               : o.baseline==="bottom" ? y-size
+               : y - size*0.78;
+      this._m(tx, ty, w, size*1.02, false);
+    }
+  };
+}
+
+/* ---------------------------------------------------------------------------
+   Text flow for front and back matter.
+--------------------------------------------------------------------------- */
+const KDP_TEXT = {
+  h1:   {size:17,   font:"bold",   before:0,  after:13, lead:1.24},
+  h2:   {size:11.5, font:"bold",   before:15, after:6,  lead:1.24},
+  p:    {size:9.5,  font:"normal", before:0,  after:9,  lead:1.44},
+  lead: {size:9.5,  font:"normal", before:0,  after:9,  lead:1.44},
+  li:   {size:9.5,  font:"normal", before:0,  after:6,  lead:1.44, indent:13},
+  small:{size:8,    font:"normal", before:0,  after:7,  lead:1.42}
+};
+
+/* Greedy line breaker over mixed bold/normal runs, so a bold lead-in can share
+   a line with the sentence that follows it. */
+function kdpBreakRuns(doc, runs, maxW, size){
+  const lines = [];
+  let cur = [], curW = 0;
+  for(const run of runs){
+    doc.setFont(KDP_FONT_FAMILY, run.font);
+    doc.setFontSize(size);
+    const words = String(run.s).split(/\s+/).filter(function(w){ return w.length; });
+    for(let i=0;i<words.length;i++){
+      const word = words[i];
+      const wpx = doc.getTextWidth(word);
+      const spx = doc.getTextWidth(" ");
+      const add = cur.length ? spx + wpx : wpx;
+      if(curW + add > maxW && cur.length){
+        lines.push(cur); cur = []; curW = 0;
+        cur.push({s:word, font:run.font, w:wpx}); curW = wpx;
+      } else {
+        cur.push({s:word, font:run.font, w:wpx, space:cur.length>0});
+        curW += add;
+      }
+    }
+  }
+  if(cur.length) lines.push(cur);
+  return lines;
+}
+
+function kdpFlow(ctx, blocks, box, startY, align){
+  const doc = ctx.doc;
+  let y = startY;
+  for(const b of blocks){
+    const st = KDP_TEXT[b.t] || KDP_TEXT.p;
+    y += st.before;
+    const indent = st.indent || 0;
+    const maxW = box.w - indent;
+    let runs;
+    if(b.t === "lead") runs = [{s:b.lead, font:"bold"}, {s:b.s, font:"normal"}];
+    else               runs = [{s:b.s,    font:st.font}];
+    const lines = kdpBreakRuns(doc, runs, maxW, st.size);
+    const lh = st.size * st.lead;
+    for(let li=0; li<lines.length; li++){
+      const line = lines[li];
+      let x = box.x + indent;
+      if(align === "center"){
+        let tw = 0;
+        for(const t of line) tw += t.w + (t.space ? doc.getTextWidth(" ") : 0);
+        x = box.x + (box.w - tw)/2;
+      }
+      if(b.t === "li" && li === 0){
+        /* Drawn, not typed: see kdpUnsupportedChars. */
+        doc.setFillColor(0,0,0);
+        ctx.circle(box.x + 3.4, y + st.size*0.52, st.size*0.115, "F");
+      }
+      for(const t of line){
+        doc.setFont(KDP_FONT_FAMILY, t.font); doc.setFontSize(st.size);
+        if(t.space) x += doc.getTextWidth(" ");
+        ctx.text(t.s, x, y + st.size*0.78, {});
+        x += t.w;
+      }
+      y += lh;
+    }
+    y += st.after;
+  }
+  return y;
+}
+
+/* ---------------------------------------------------------------------------
+   Page rendering
+--------------------------------------------------------------------------- */
+function kdpFolio(ctx, box, n){
+  const doc = ctx.doc;
+  doc.setFont(KDP_FONT_FAMILY, "normal");
+  doc.setFontSize(KDP_LAYOUT.folioPt);
+  doc.setTextColor(0,0,0);
+  const x = box.recto ? (box.x + box.w) : box.x;
+  /* Held 1.5pt clear of the live-area edge: a folio sitting flush on the
+     boundary reads as tight, and its descender box would touch the margin. */
+  ctx.text(String(n), x, box.y + box.h - 1.5, {align: box.recto ? "right" : "left", baseline:"bottom"});
+}
+
+function kdpRunningHead(ctx, box, text){
+  const doc = ctx.doc;
+  doc.setFont(KDP_FONT_FAMILY, "normal");
+  doc.setFontSize(KDP_LAYOUT.runHeadPt);
+  doc.setTextColor(105,105,105);
+  const x = box.recto ? (box.x + box.w) : box.x;
+  ctx.text(text.toUpperCase(), x, box.y, {
+    align: box.recto ? "right" : "left",
+    baseline: "top",
+    charSpace: KDP_LAYOUT.runHeadTrack
+  });
+  doc.setTextColor(0,0,0);
+}
+
+function kdpRenderPuzzlePage(ctx, plan, cfg, pg, box){
+  const P = plan.preset, L = KDP_LAYOUT, doc = ctx.doc;
+  const contentTop = box.y + L.runHeadPt + 6;
+  const contentBot = box.y + box.h - L.footBlockPt;
+  const slotH = (contentBot - contentTop) / P.puzzleRows;
+  const strip = L.noteStripIn * KDP_IN;
+
+  for(let k=0; k<pg.items.length; k++){
+    const item = cfg.puzzles[pg.items[k]];
+    const slotTop = contentTop + k*slotH;
+
+    doc.setFont(KDP_FONT_FAMILY, "bold");
+    doc.setFontSize(L.titlePt);
+    doc.setTextColor(0,0,0);
+    ctx.text(item.label, box.x, slotTop + L.titlePt*0.8, {});
+    doc.setFont(KDP_FONT_FAMILY, "normal");
+    doc.setFontSize(L.titlePt - 1.5);
+    doc.setTextColor(90,90,90);
+    ctx.text(item.diffLabel, box.x + box.w, slotTop + L.titlePt*0.8, {align:"right"});
+    doc.setTextColor(0,0,0);
+
+    const gTop = slotTop + L.titlePt + 8;
+    const gH   = slotH - (L.titlePt + 8);
+    const needCages = item.P.kind === "killer";
+    const fit = kdpFitGrid(box.w, gH, strip, {given:true, cages:needCages});
+    if(!fit.ok) return fit;
+
+    const gx = box.x + (box.w - fit.grid)/2;
+    const slack = Math.max(0, gH - fit.grid - fit.reserve);
+    const gy = gTop + slack/3;
+    kdpDrawGrid(ctx, item.P, gx, gy, fit.grid, {withSol:false, cages:true, tints:true});
+  }
+  return {ok:true};
+}
+
+function kdpRenderSolutionPage(ctx, plan, cfg, pg, box){
+  const P = plan.preset, L = KDP_LAYOUT, doc = ctx.doc;
+  const contentTop = box.y;
+  const contentBot = box.y + box.h - L.footBlockPt;
+  const cols = P.solCols, rows = P.solRows;
+  const cw = (box.w - L.solColGapPt*(cols-1)) / cols;
+  const ch = ((contentBot - contentTop) - L.solRowGapPt*(rows-1)) / rows;
+  const labelBlock = L.solLabelPt + 5;
+
+  for(let k=0; k<pg.items.length; k++){
+    const item = cfg.puzzles[pg.items[k]];
+    const col = k % cols, row = (k / cols) | 0;
+    const sx = box.x + col*(cw + L.solColGapPt);
+    const sy = contentTop + row*(ch + L.solRowGapPt);
+
+    const fit = kdpFitGrid(cw, ch - labelBlock, 0, {given:true, sol:true});
+    if(!fit.ok) return fit;
+    const gx = sx + (cw - fit.grid)/2;
+
+    doc.setFont(KDP_FONT_FAMILY, "bold");
+    doc.setFontSize(L.solLabelPt);
+    doc.setTextColor(0,0,0);
+    ctx.text(item.solLabel, gx, sy + L.solLabelPt*0.8, {});
+
+    kdpDrawGrid(ctx, item.P, gx, sy + labelBlock, fit.grid,
+                {withSol:true, cages:false, tints:true});
+  }
+  return {ok:true};
+}
+
+function kdpRenderPage(ctx, plan, cfg, pg, index){
+  const pageNo = index + 1;
+  const box = kdpLiveArea(plan.preset, pageNo, plan.gutterIn);
+  const doc = ctx.doc, L = KDP_LAYOUT, F = cfg.front;
+  ctx.page = pageNo;
+  let res = {ok:true};
+
+  if(pg.kind === "halftitle"){
+    doc.setTextColor(0,0,0);
+    let y = box.y + box.h*0.30;
+    const t = kdpBreakRuns(doc, [{s:F.title, font:"bold"}], box.w, 21);
+    for(const line of t){
+      let tw = 0; doc.setFont(KDP_FONT_FAMILY,"bold"); doc.setFontSize(21);
+      for(const w of line) tw += w.w + (w.space ? doc.getTextWidth(" ") : 0);
+      let x = box.x + (box.w - tw)/2;
+      for(const w of line){ if(w.space) x += doc.getTextWidth(" "); ctx.text(w.s, x, y, {}); x += w.w; }
+      y += 21*1.22;
+    }
+    if(F.subtitle){
+      y += 10;
+      doc.setFont(KDP_FONT_FAMILY,"normal"); doc.setFontSize(10); doc.setTextColor(90,90,90);
+      ctx.text(F.subtitle, box.x + box.w/2, y, {align:"center"});
+      doc.setTextColor(0,0,0);
+    }
+  }
+
+  else if(pg.kind === "copyright"){
+    const blocks = [];
+    blocks.push({t:"small", s:F.title});
+    for(const line of F.copyright) blocks.push({t:"small", s:line});
+    blocks.push({t:"small", s:"Edition "+cfg.bookId+" · preset "+plan.presetId+" ("+plan.preset.name+") · seeds "+cfg.seedStart+"–"+cfg.seedEnd});
+    if(F.isbn) blocks.push({t:"small", s:"ISBN "+F.isbn});
+    blocks.push({t:"small", s:F.site});
+    /* Copyright pages sit low on the page by convention. */
+    const h = 8*1.42*18;
+    kdpFlow(ctx, blocks, box, Math.max(box.y, box.y + box.h - h));
+  }
+
+  else if(pg.kind === "howto"){
+    kdpFlow(ctx, F.howto[pg.part-1], box, box.y + 14);
+  }
+
+  else if(pg.kind === "about"){
+    kdpFlow(ctx, F.about, box, box.y + 14);
+  }
+
+  else if(pg.kind === "divider"){
+    doc.setFont(KDP_FONT_FAMILY,"bold"); doc.setFontSize(24); doc.setTextColor(0,0,0);
+    ctx.text("Solutions", box.x + box.w/2, box.y + box.h*0.34, {align:"center"});
+    doc.setFont(KDP_FONT_FAMILY,"normal"); doc.setFontSize(9); doc.setTextColor(105,105,105);
+    ctx.text("Puzzle "+1+" to "+cfg.puzzles.length, box.x + box.w/2, box.y + box.h*0.34 + 22, {align:"center"});
+    doc.setTextColor(0,0,0);
+  }
+
+  else if(pg.kind === "series"){
+    const blocks = [{t:"h1", s:"Also in the Zaney Sudoku series"}];
+    const others = cfg.seriesList || [];
+    if(others.length) for(const o of others) blocks.push({t:"li", s:o});
+    else blocks.push({t:"p", s:"More volumes are on the way."});
+    blocks.push({t:"p", s:"Every volume is a different set of puzzles. No puzzle appears in two books."});
+    blocks.push({t:"p", s:"Play free at "+F.site+" — 1.7 million puzzles across killer, classic, Sudoku X and Hyper, plus four daily challenges."});
+    kdpFlow(ctx, blocks, box, box.y + 14);
+  }
+
+  else if(pg.kind === "puzzles"){
+    kdpRunningHead(ctx, box, cfg.runningHead);
+    res = kdpRenderPuzzlePage(ctx, plan, cfg, pg, box);
+  }
+
+  else if(pg.kind === "solutions"){
+    res = kdpRenderSolutionPage(ctx, plan, cfg, pg, box);
+  }
+
+  /* pg.kind === "blank" draws nothing, deliberately. */
+
+  if(pg.folio && res.ok) kdpFolio(ctx, box, pageNo);
+  return res;
+}
+
+/* Every string that will be typeset, gathered so it can be checked against the
+   embedded subset before anything is composed. */
+function kdpCollectText(cfg){
+  const out = [cfg.front.title, cfg.front.subtitle, cfg.front.author,
+               cfg.front.imprint, cfg.front.isbn, cfg.front.site, cfg.runningHead];
+  for(const line of cfg.front.copyright||[]) out.push(line);
+  const blocks = [].concat.apply([], (cfg.front.howto||[])).concat(cfg.front.about||[]);
+  for(const b of blocks){ if(b.s) out.push(b.s); if(b.lead) out.push(b.lead); }
+  for(const t of cfg.seriesList||[]) out.push(t);
+  if(cfg.puzzles && cfg.puzzles.length){
+    out.push(cfg.puzzles[0].label, cfg.puzzles[0].solLabel, cfg.puzzles[0].diffLabel);
+    out.push(cfg.puzzles[cfg.puzzles.length-1].label);
+  }
+  out.push("Solutions", "Puzzle", "0123456789");
+  return out.filter(Boolean);
+}
+
+/* jsPDF draws nothing at all for a glyph the embedded font lacks — no box, no
+   fallback, just a hole. fonts/inter.woff2 is a web subset (206 codepoints), so
+   this is easy to hit with ordinary typography like a bullet or a euro sign.
+   Checked before composing so it fails loudly instead of shipping. */
+function kdpUnsupportedChars(cfg, charset){
+  if(!charset) return [];
+  const have = {};
+  for(const ch of charset) have[ch] = true;
+  const bad = {};
+  for(const s of kdpCollectText(cfg))
+    for(const ch of String(s))
+      if(ch !== "\n" && ch !== "\t" && !have[ch]) bad[ch] = (bad[ch]||0) + 1;
+  return Object.keys(bad).map(function(ch){
+    return {ch: ch, code: "U+" + ("0000"+ch.charCodeAt(0).toString(16).toUpperCase()).slice(-4), count: bad[ch]};
+  });
+}
+
+/* ---------------------------------------------------------------------------
+   Seed ledger. Two paths, and the exporter says out loud which one it is on
+   before a single puzzle is dealt.
+--------------------------------------------------------------------------- */
+function kdpLedgerCheck(books, bookId){
+  const b = books[bookId];
+  if(!b) throw new Error("No entry '"+bookId+"' in books.json");
+  for(const f of ["title","mode","difficulty","preset","seedStart","seedEnd","puzzleCount"])
+    if(b[f] === undefined || b[f] === null)
+      throw new Error("books.json entry '"+bookId+"' is missing required field '"+f+"'");
+  if(b.seedEnd < b.seedStart)
+    throw new Error("'"+bookId+"' has seedEnd before seedStart");
+  const span = b.seedEnd - b.seedStart + 1;
+  if(span !== b.puzzleCount)
+    throw new Error("'"+bookId+"' declares puzzleCount "+b.puzzleCount+" but its seed range "+
+                    b.seedStart+"–"+b.seedEnd+" holds "+span+" seeds. Fix books.json.");
+  if(!KDP_PRESETS[b.preset])
+    throw new Error("'"+bookId+"' names unknown preset '"+b.preset+"'");
+
+  const overlaps = [];
+  for(const k in books){
+    if(!Object.prototype.hasOwnProperty.call(books,k) || k === bookId) continue;
+    const o = books[k];
+    if(o.seedStart === undefined || o.seedEnd === undefined) continue;
+    if(o.altEditionOf === bookId) continue;   /* a declared alt edition of THIS book */
+    if(b.seedStart <= o.seedEnd && o.seedStart <= b.seedEnd) overlaps.push(k);
+  }
+
+  if(b.altEditionOf){
+    const base = books[b.altEditionOf];
+    if(!base) throw new Error("'"+bookId+"' declares altEditionOf '"+b.altEditionOf+"', which is not in books.json");
+    if(base.altEditionOf) throw new Error("'"+bookId+"' is an alt edition of '"+b.altEditionOf+"', which is itself an alt edition. Point it at the original.");
+    if(b.seedStart !== base.seedStart || b.seedEnd !== base.seedEnd)
+      throw new Error("'"+bookId+"' is an alt edition of '"+b.altEditionOf+"' but does not reuse its exact seed range ("+
+                      base.seedStart+"–"+base.seedEnd+"). An alt edition must be the same puzzles.");
+    if(b.preset === base.preset)
+      throw new Error("'"+bookId+"' is an alt edition of '"+b.altEditionOf+"' under the SAME preset ("+b.preset+"). "+
+                      "That is a duplicate book, not a large-print edition.");
+    if(b.mode !== base.mode || b.difficulty !== base.difficulty)
+      throw new Error("'"+bookId+"' is an alt edition of '"+b.altEditionOf+"' but changes mode/difficulty. That is a different book.");
+    /* The base edition may share this range, and so may any sibling that is
+       also an alt edition of the same book — a title can legitimately exist as
+       large print AND a compact. Each of those has to be a distinct format. */
+    const siblings = overlaps.filter(function(k){
+      return k !== b.altEditionOf && books[k].altEditionOf === b.altEditionOf;
+    });
+    for(const k of siblings){
+      if(books[k].preset === b.preset)
+        throw new Error("'"+bookId+"' and '"+k+"' are both alt editions of '"+b.altEditionOf+
+          "' under the SAME preset ("+b.preset+"). Two editions of one title have to be different formats.");
+    }
+    const strays = overlaps.filter(function(k){
+      return k !== b.altEditionOf && books[k].altEditionOf !== b.altEditionOf;
+    });
+    if(strays.length)
+      throw new Error("'"+bookId+"' overlaps "+strays.join(", ")+" as well as its base edition. "+
+        "Only the base and its other editions may share this range.");
+    return {
+      path: "altEdition",
+      of: b.altEditionOf,
+      message: "ALT EDITION PATH. '"+bookId+"' deliberately reuses the exact seed range of '"+b.altEditionOf+
+               "' ("+b.seedStart+"–"+b.seedEnd+") under preset "+b.preset+" instead of "+base.preset+
+               ". These are the same puzzles in a different format, which is the one case where a repeat is intended."
+    };
+  }
+
+  if(overlaps.length)
+    throw new Error("REFUSING TO EXPORT. '"+bookId+"' (seeds "+b.seedStart+"–"+b.seedEnd+
+      ") overlaps "+overlaps.map(function(k){ return "'"+k+"' ("+books[k].seedStart+"–"+books[k].seedEnd+")"; }).join(" and ")+
+      ". Duplicate puzzles across your own catalogue get flagged by Amazon and noticed by reviewers. "+
+      "Either move this range or declare \"altEditionOf\" if this really is a second format of the same book.");
+
+  return {
+    path: "unique",
+    message: "UNIQUE RANGE PATH. '"+bookId+"' claims seeds "+b.seedStart+"–"+b.seedEnd+
+             " ("+b.puzzleCount+" puzzles). Checked against "+(Object.keys(books).length-1)+
+             " other ledger entries — no overlap."
+  };
+}
+
+function kdpSeriesList(books, bookId){
+  const out = [];
+  for(const k in books){
+    if(!Object.prototype.hasOwnProperty.call(books,k) || k === bookId) continue;
+    const o = books[k], p = KDP_PRESETS[o.preset];
+    out.push(o.title + (p && p.id === "C" ? " — large print edition" : "") +
+             (o.puzzleCount ? " · " + o.puzzleCount + " puzzles" : ""));
+  }
+  return out.sort();
+}
+
+/* ---------------------------------------------------------------------------
+   Deterministic PDF post-pass.
+
+   Three things jsPDF does that KDP will not forgive, and one that breaks
+   reprints. All four fixes are LENGTH-PRESERVING — replaced spans are padded
+   with spaces — so the xref offsets stay valid and the file needs no
+   reserialisation.
+
+     1. jsPDF writes all fourteen base-14 Type1 fonts (Helvetica, Courier,
+        Times, Symbol, ZapfDingbats) into every document and lists them in the
+        shared /Resources, used or not. They carry no FontFile, so a preflight
+        check sees fourteen non-embedded fonts however carefully you embed your
+        own. The objects are nulled and their /Resources entries removed.
+     2. /MediaBox comes out as 364.3199999999999932 rather than 364.32.
+     3. jsPDF stamps a random /ID, so two runs of identical input produce
+        different bytes. Replaced with a hash of the book identity.
+     4. /CreationDate is pinned to a constant, not today, for the same reason.
+--------------------------------------------------------------------------- */
+const KDP_FIXED_EPOCH = Date.UTC(2020, 0, 1, 0, 0, 0);
+
+const KDP_BASE14 = ["Helvetica","Helvetica-Bold","Helvetica-Oblique","Helvetica-BoldOblique",
+  "Courier","Courier-Bold","Courier-Oblique","Courier-BoldOblique",
+  "Times-Roman","Times-Bold","Times-Italic","Times-BoldItalic","ZapfDingbats","Symbol"];
+
+function kdpHashHex(str){
+  let out = "";
+  for(let k=0;k<4;k++){
+    let h = (2166136261 ^ Math.imul(k+1, 0x9E3779B9)) >>> 0;
+    for(let i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+    out += ("00000000" + h.toString(16)).slice(-8);
+  }
+  return out.toUpperCase();
+}
+
+function kdpPad(replacement, originalLength){
+  if(replacement.length > originalLength)
+    throw new Error("kdpFixup: replacement longer than the span it replaces");
+  return replacement + new Array(originalLength - replacement.length + 1).join(" ");
+}
+
+function kdpFixup(bytes, opts){
+  let s = "";
+  const CH = 8192;
+  for(let i=0;i<bytes.length;i+=CH)
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i+CH));
+  const before = s.length;
+  const report = {stripped:[], mediaBoxes:0, id:null};
+
+  /* 1a. null out the base-14 font objects */
+  const objRe = /(\d+) 0 obj\r?\n(<<\r?\n\/Type \/Font\r?\n\/BaseFont \/([A-Za-z-]+)\r?\n\/Subtype \/Type1[\s\S]{0,200}?>>)\r?\nendobj/g;
+  s = s.replace(objRe, function(whole, num, dict, base){
+    if(KDP_BASE14.indexOf(base) < 0) return whole;
+    report.stripped.push(parseInt(num,10));
+    return whole.replace(dict, kdpPad("null", dict.length));
+  });
+
+  /* 1b. drop their names from the shared /Resources /Font dictionary */
+  if(report.stripped.length){
+    const refRe = /\/F\d+ (\d+) 0 R/g;
+    s = s.replace(refRe, function(whole, num){
+      return report.stripped.indexOf(parseInt(num,10)) >= 0 ? kdpPad("", whole.length) : whole;
+    });
+  }
+
+  /* 2. exact MediaBox */
+  if(opts && opts.trimPt){
+    const want = "[0 0 " + kdpNum(opts.trimPt[0]) + " " + kdpNum(opts.trimPt[1]) + "]";
+    s = s.replace(/\/MediaBox (\[[^\]]*\])/g, function(whole, box){
+      report.mediaBoxes++;
+      return whole.replace(box, kdpPad(want, box.length));
+    });
+  }
+
+  /* 3. deterministic /ID */
+  if(opts && opts.seed){
+    const hex = kdpHashHex(opts.seed);
+    s = s.replace(/\/ID \[ <([0-9A-Fa-f]+)> <([0-9A-Fa-f]+)> \]/g, function(whole, a){
+      report.id = hex.slice(0, a.length);
+      return whole.split(a).join(report.id);
+    });
+  }
+
+  if(s.length !== before)
+    throw new Error("kdpFixup: byte length changed ("+before+" → "+s.length+"); xref would be invalid");
+
+  const out = new Uint8Array(s.length);
+  for(let i=0;i<s.length;i++) out[i] = s.charCodeAt(i) & 0xFF;
+  return {bytes: out, report: report};
+}
+
+function kdpNum(v){
+  const r = Math.round(v*1000)/1000;
+  return (Math.abs(r - Math.round(r)) < 1e-9) ? String(Math.round(r)) : String(r);
+}
+
+/* ---------------------------------------------------------------------------
+   Assembly
+--------------------------------------------------------------------------- */
+function kdpRegisterFonts(doc, fonts){
+  if(!fonts || !fonts.regular || !fonts.bold)
+    throw new Error("KDP_FONTS not loaded — the interior needs real embedded fonts, "+
+                    "and jsPDF's built-in Helvetica is not one.");
+  doc.addFileToVFS("Inter-kdp-regular.ttf", fonts.regular);
+  doc.addFont("Inter-kdp-regular.ttf", KDP_FONT_FAMILY, "normal");
+  doc.addFileToVFS("Inter-kdp-bold.ttf", fonts.bold);
+  doc.addFont("Inter-kdp-bold.ttf", KDP_FONT_FAMILY, "bold");
+  doc.setFont(KDP_FONT_FAMILY, "normal");
+}
+
+function kdpAbortMessage(plan, cfg, fit, where){
+  return "EXPORT ABORTED — unreadable at this size.\n\n"+
+    "Preset "+plan.presetId+" (\""+plan.preset.name+"\", "+plan.preset.trimIn[0]+"×"+plan.preset.trimIn[1]+" in) "+
+    "combined with "+(KDP_MODE_NAME[cfg.mode]||cfg.mode)+" puts type in the "+where+" at "+
+    fit.smallest.toFixed(2)+"pt, below the "+KDP_LAYOUT.minTypePt+"pt legibility floor. "+
+    "The grid is already filling the live area, so there is nothing left to reclaim.\n\n"+
+    "This preset/mode combination does not work. Use a larger trim (preset B or C) for "+
+    (KDP_MODE_NAME[cfg.mode]||cfg.mode)+", or fewer puzzles per page.";
+}
+
+function kdpMakeDoc(jsPDFctor, plan){
+  const t = kdpTrimPt(plan.preset);
+  return new jsPDFctor({unit:"pt", format:[t[0], t[1]], compress:true});
+}
+
+/* Returns a driver the caller steps through, so the browser can chunk it
+   between frames and Node can just run it to completion. */
+function kdpAssembler(jsPDFctor, fonts, plan, cfg, pageLimit){
+  const missing = kdpUnsupportedChars(cfg, fonts.charset);
+  if(missing.length)
+    throw new Error("EXPORT ABORTED — the embedded font cannot render "+
+      missing.map(function(m){ return "'"+m.ch+"' ("+m.code+", used "+m.count+"×)"; }).join(", ")+
+      ".\n\nfonts/inter.woff2 is the site's web subset and does not contain these. "+
+      "jsPDF renders a missing glyph as nothing at all, so this would have printed as a gap. "+
+      "Either reword the text, or replace fonts/inter.woff2 with a fuller Inter and re-run "+
+      "tools/build-kdp-fonts.py.");
+  const doc = kdpMakeDoc(jsPDFctor, plan);
+  kdpRegisterFonts(doc, fonts);
+  const ctx = kdpCtx(doc, cfg.trace);
+  const total = Math.min(pageLimit || plan.pages.length, plan.pages.length);
+  const trim = kdpTrimPt(plan.preset);
+  let i = 0;
+  return {
+    doc: doc, ctx: ctx, total: total,
+    done: function(){ return i >= total; },
+    progress: function(){ return i; },
+    step: function(n){
+      const end = Math.min(i + (n||1), total);
+      for(; i<end; i++){
+        if(i > 0) doc.addPage([trim[0], trim[1]]);
+        const r = kdpRenderPage(ctx, plan, cfg, plan.pages[i], i);
+        if(!r.ok) throw new Error(kdpAbortMessage(plan, cfg, r,
+          plan.pages[i].kind === "solutions" ? "solutions section" : "puzzle grids"));
+      }
+      return i;
+    },
+    finish: function(){
+      doc.setProperties({
+        title: cfg.front.title,
+        subject: cfg.bookId+" · preset "+plan.presetId+" ("+plan.preset.name+") · seeds "+
+                 cfg.seedStart+"–"+cfg.seedEnd+" · "+cfg.puzzleCount+" puzzles · "+plan.total+"pp",
+        keywords: [cfg.bookId, "preset:"+plan.presetId, "trim:"+plan.preset.trimIn.join("x")+"in",
+                   "seeds:"+cfg.seedStart+"-"+cfg.seedEnd, "puzzles:"+cfg.puzzleCount,
+                   "pages:"+plan.total, "mode:"+cfg.mode, "difficulty:"+cfg.diff].join(", "),
+        author: cfg.front.author,
+        creator: "Zaney Sudoku KDP interior exporter"
+      });
+      /* Pinned, not today's date: same seeds + same preset must give the same
+         bytes when this is reprinted years from now. */
+      doc.setCreationDate(new Date(KDP_FIXED_EPOCH));
+      const raw = new Uint8Array(doc.output("arraybuffer"));
+      return kdpFixup(raw, {
+        trimPt: trim,
+        seed: [cfg.bookId, plan.presetId, cfg.seedStart, cfg.seedEnd,
+               cfg.puzzleCount, plan.total, cfg.mode, cfg.diff].join("|")
+      });
+    }
+  };
+}

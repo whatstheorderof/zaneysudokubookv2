@@ -1,0 +1,10 @@
+{
+  "sha256": "ac7be14aa38b99fcf389da7702b7986b76f484849be0320997e38e0de2da8c2b",
+  "sha256File": "dcac85ec742f5387ba4e2ca632eb9c1782024c72e3a60be39d6c62088934dce8",
+  "source": "zaneysudoku/index.html",
+  "regions": [
+    "engine",
+    "par"
+  ],
+  "bytes": 16135
+}

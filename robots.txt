@@ -1,0 +1,4 @@
+# Private tool. books.json holds the publishing ledger, so keep this out of
+# search results.
+User-agent: *
+Disallow: /

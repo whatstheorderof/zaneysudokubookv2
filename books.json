@@ -1,0 +1,51 @@
+{
+  "ZS-001": {
+    "title": "Classic Sudoku: Medium",
+    "mode": "classic",
+    "difficulty": "medium",
+    "preset": "B",
+    "seedStart": 41000,
+    "seedEnd": 41159,
+    "puzzleCount": 160,
+    "pageCount": 110,
+    "published": null,
+    "asin": null
+  },
+  "ZS-002": {
+    "title": "Sudoku X: Hard",
+    "mode": "x",
+    "difficulty": "hard",
+    "preset": "B",
+    "seedStart": 43000,
+    "seedEnd": 43159,
+    "puzzleCount": 160,
+    "pageCount": 110,
+    "published": null,
+    "asin": null
+  },
+  "ZS-003": {
+    "title": "Killer Sudoku: Hard",
+    "mode": "killer",
+    "difficulty": "hard",
+    "preset": "A",
+    "seedStart": 47000,
+    "seedEnd": 47335,
+    "puzzleCount": 336,
+    "pageCount": 402,
+    "published": null,
+    "asin": null
+  },
+  "ZS-004": {
+    "title": "Classic Sudoku: Medium \u2014 Large Print",
+    "mode": "classic",
+    "difficulty": "medium",
+    "preset": "C",
+    "altEditionOf": "ZS-001",
+    "seedStart": 41000,
+    "seedEnd": 41159,
+    "puzzleCount": 160,
+    "pageCount": 198,
+    "published": null,
+    "asin": null
+  }
+}
