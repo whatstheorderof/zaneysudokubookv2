@@ -146,6 +146,37 @@ def verify(outdir, book_id, render=True):
           "%d marks checked across %d pages" % (len(meta["marks"]), n) if not viol
           else "%d violations, first: %s" % (len(viol), viol[0]))
 
+    # ---- no two pieces of text may overlap ---------------------------------
+    # A killer cell can carry both a cage sum and a given digit, and they used
+    # to collide. This is the general form of that bug: nothing typeset may
+    # touch anything else typeset, anywhere in the book.
+    TOL = 0.5          # points of slack, so float noise is not a "collision"
+    by_page = {}
+    for m in meta["marks"]:
+        if m.get("t") == "text":
+            by_page.setdefault(m["page"], []).append(m)
+    collisions, text_count = [], 0
+    for pg, marks in by_page.items():
+        text_count += len(marks)
+        marks.sort(key=lambda m: m["x"])
+        for i, a in enumerate(marks):
+            ax1 = a["x"] + a["w"]
+            for b in marks[i + 1:]:
+                if b["x"] >= ax1 - TOL:
+                    break                      # sorted by x: nothing further can overlap
+                if (a["y"] + a["h"] - TOL > b["y"]) and (b["y"] + b["h"] - TOL > a["y"]):
+                    collisions.append((pg, round(a["x"], 1), round(a["y"], 1),
+                                       round(b["x"], 1), round(b["y"], 1)))
+                    if len(collisions) > 8:
+                        break
+            if len(collisions) > 8:
+                break
+    check("no two pieces of text overlap anywhere", not collisions,
+          "%d text items checked across %d pages" % (text_count, len(by_page)) if not collisions
+          else "%d collisions, first on page %s at (%s,%s) vs (%s,%s)"
+               % (len(collisions), collisions[0][0], collisions[0][1], collisions[0][2],
+                  collisions[0][3], collisions[0][4]))
+
     # the mirroring itself: each side's content must sit against ITS OWN limits
     body = [m for m in meta["marks"] if m["page"] >= 7]
     odd_x0 = min((m["x"] for m in body if m["page"] % 2 == 1), default=None)

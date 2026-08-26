@@ -139,6 +139,12 @@ const KDP_LAYOUT = {
   minTypePt: 5,               /* legibility floor — hard abort below this    */
   boxLineW: 1.1, cellLineW: 0.35, cageLineW: 0.5,
   givenRatio: 0.60, solRatio: 0.56, cageRatio: 0.30,
+  /* A killer cell can hold both a cage sum and a given digit. The sum owns the
+     top-left corner, so in a caged grid the digits are a little smaller and sit
+     in the space beneath it — otherwise they collide, which is what an easy
+     killer book (five givens per grid) makes obvious. */
+  givenRatioCaged: 0.52, solRatioCaged: 0.50,
+  digitOptical: 0.55,   /* digits sit on the baseline, so the em box centres a touch low */
   tint: 236                   /* light region tint for Sudoku X / Hyper      */
 };
 
@@ -614,6 +620,10 @@ function kdpDrawGrid(ctx, P, x, y, size, opt){
     ctx.line(x, y+i*cell, x+size, y+i*cell);
   }
 
+  /* How far down the cell the cage-sum band reaches. Zero when no sums are
+     drawn, so uncaged grids and the solutions section are unaffected. */
+  let sumBand = 0;
+
   if(opt.cages && P.cages && P.cages.length){
     const inset = cell*0.085;
     doc.setDrawColor(70);
@@ -644,21 +654,38 @@ function kdpDrawGrid(ctx, P, x, y, size, opt){
       ctx.rect(tx-sumPt*0.14, ty, w+sumPt*0.28, sumPt*1.02, "F");
       ctx.text(s, tx, ty+sumPt*0.52, {baseline:"middle"});
     }
+    sumBand = inset*1.3 + sumPt*1.02;
     doc.setDrawColor(0);
   }
+
+  /* Centre the digit in the part of the cell the sum has not claimed. With no
+     sums that is the whole cell and nothing moves; with sums every digit in the
+     grid shifts by the same amount, so they stay level with each other. */
+  const caged = sumBand > 0;
+  const givenPt = cell*(caged ? L.givenRatioCaged : L.givenRatio);
+  const solPt   = cell*(caged ? L.solRatioCaged   : L.solRatio);
+  /* Optically centred in whatever the sum band leaves, then clamped so the em
+     box can neither ride up into the sum nor drop out of the cell. With no sums
+     this lands exactly where it always did. */
+  const digitCyFor = function(pt){
+    const half = pt/2;
+    return Math.min(Math.max(sumBand + (cell - sumBand)*L.digitOptical, sumBand + half), cell - half);
+  };
+  const givenCy = digitCyFor(givenPt);
+  const solCy   = digitCyFor(solPt);
 
   for(let i=0;i<81;i++){
     const r=(i/9)|0, c=i%9;
     if(P.given[i]){
       doc.setTextColor(0,0,0);
       doc.setFont(KDP_FONT_FAMILY, "bold");
-      doc.setFontSize(cell*L.givenRatio);
-      ctx.text(String(P.sol[i]), x+c*cell+cell/2, y+r*cell+cell*0.55, {align:"center", baseline:"middle"});
+      doc.setFontSize(givenPt);
+      ctx.text(String(P.sol[i]), x+c*cell+cell/2, y+r*cell+givenCy, {align:"center", baseline:"middle"});
     } else if(opt.withSol){
       doc.setTextColor(20,20,20);
       doc.setFont(KDP_FONT_FAMILY, "normal");
-      doc.setFontSize(cell*L.solRatio);
-      ctx.text(String(P.sol[i]), x+c*cell+cell/2, y+r*cell+cell*0.55, {align:"center", baseline:"middle"});
+      doc.setFontSize(solPt);
+      ctx.text(String(P.sol[i]), x+c*cell+cell/2, y+r*cell+solCy, {align:"center", baseline:"middle"});
     }
   }
   doc.setTextColor(0,0,0);
@@ -856,7 +883,7 @@ function kdpCtx(doc, trace){
     page: 1,
     marks: trace ? [] : null,
     trace: !!trace,
-    _m: function(x,y,w,h,stroked){ if(this.marks) this.marks.push({page:this.page, x:x, y:y, w:Math.max(w,0), h:Math.max(h,0), s:!!stroked}); },
+    _m: function(x,y,w,h,stroked,kind){ if(this.marks) this.marks.push({page:this.page, x:x, y:y, w:Math.max(w,0), h:Math.max(h,0), s:!!stroked, t:kind||"draw"}); },
     line: function(x1,y1,x2,y2){
       this.doc.line(x1,y1,x2,y2);
       this._m(Math.min(x1,x2), Math.min(y1,y2), Math.abs(x2-x1), Math.abs(y2-y1), true);
@@ -880,7 +907,7 @@ function kdpCtx(doc, trace){
                : o.baseline==="top"    ? y
                : o.baseline==="bottom" ? y-size
                : y - size*0.78;
-      this._m(tx, ty, w, size*1.02, false);
+      this._m(tx, ty, w, size*1.02, false, "text");
     }
   };
 }

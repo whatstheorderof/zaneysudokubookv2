@@ -159,8 +159,12 @@ it covers preview URLs but not production, so don't post the link anywhere.
   otherwise sees fourteen non-embedded fonts however carefully you embed yours.
 * The solutions divider always lands on a right-hand page, and the total is
   always even.
-* Type never drops below 5 pt. If a preset and mode combination cannot clear
+* Type never drops below 5 pt. If a size and mode combination cannot clear
   that, the export aborts and names it rather than shipping something unreadable.
+* **Nothing typeset overlaps anything else typeset**, on any page. Every text
+  bounding box in the whole book is checked against every other one. A killer
+  cell holds both a cage sum and, on easy books, a given digit; the digits are
+  sized and placed to sit in the space the sum leaves.
 * **Same seeds and same preset always produce the same bytes**, so a reprint
   years from now matches what is in the shops. `/CreationDate` is a constant,
   `/ID` is a hash of the book identity rather than jsPDF's random one, jsPDF is
@@ -185,7 +189,7 @@ python3 dev/sync-engine.py       --from ../zaneysudoku/index.html   # re-vendor
 cd dev && npm install && npm test
 ```
 
-162 checks: pagination and refusal guards, the page in jsdom, structural PDF
+165 checks: pagination and refusal guards, the page in jsdom, structural PDF
 verification including a bounds check of every drawing call against the mirrored
 live area, and the site's own solver run over a sample of printed puzzles.
 Preset A takes a few minutes because 336 killer grids have to be dealt.
