@@ -127,9 +127,10 @@ const KDP_GUTTER_TIERS = [
    being implied by the code, so a mode that needs a fourth how-to page is a
    data change — the plan pads around whatever this says. */
 const KDP_FRONT = {
-  howtoPages: 3,   /* must equal KDP_HOWTO[mode].length for every mode */
-  playMore: true,  /* the QR page in the front matter                  */
-  backPage: true   /* the QR page as the final leaf, instead of a blank */
+  contents: true,  /* the contents page, built from the plan itself     */
+  howtoPages: 2,   /* must equal KDP_HOWTO[mode].length for every mode  */
+  playMore: true,  /* the QR page in the front matter                   */
+  backPage: true   /* the QR page as the final leaf, instead of a blank  */
 };
 
 const KDP_MARGIN_IN = 0.4;    /* top / bottom / outside. KDP minimum is 0.25 */
@@ -268,6 +269,7 @@ function kdpPlan(presetId, puzzleCount){
   const push = (kind, extra) => { pages.push(Object.assign({kind, folio:false}, extra||{})); };
 
   push("halftitle"); push("copyright");
+  if(KDP_FRONT.contents) push("contents");
   for(let i=1;i<=KDP_FRONT.howtoPages;i++) push("howto", {part:i});
   push("about");
   if(KDP_FRONT.playMore) push("playmore");
@@ -767,12 +769,13 @@ const KDP_QR = [
 ];
 
 
-  /* Everything the help page at zaneysudoku.com/#/help tells a player, moved
-     into print: the rules, the three tips, where the puzzles come from, and
-     where to go next. The site's Controls section is the one thing left out —
-     arrow keys and note mode mean nothing on paper — and the pencil-mark advice
-     it carried is folded into the tips instead. Three pages per mode; the
-     count is KDP_FRONT.howtoPages and the plan pads around it. */
+  /* The rules, the tips and the closing note, taken from the help page at
+     zaneysudoku.com/#/help and rewritten for print. Two of the site's sections
+     are deliberately not here: Controls, because arrow keys mean nothing on
+     paper, and the piece about where the puzzles come from. Its pencil-mark
+     advice is folded into the tips, and the pointer to the guides lives on the
+     QR page. Two pages per mode; the count is KDP_FRONT.howtoPages and the
+     plan pads around it. */
 const KDP_HOWTO = {
   killer: [
     [
@@ -790,16 +793,8 @@ const KDP_HOWTO = {
       {t:"lead", lead:"Use the rule of 45. ", s:"Every row, every column and every 3×3 box sums to 45. If the cages covering a box total 43 with a single cell poking out beyond it, that overflow is the value of the cell. Innies and outies win more killer puzzles than raw arithmetic does."},
       {t:"lead", lead:"Pencil marks are not cheating. ", s:"Every puzzle in this book has a blank strip beneath it for working. Use it. Writing down the candidates for a cage is how you find the pair that solves it, and crossing a digit out of a row, column, box and cage as you place it keeps the grid honest."},
       {t:"h2", s:"About the puzzles"},
-      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution. There are no broken puzzles here and no ambiguous endings. If you are stuck, you are stuck on something that is genuinely there."}
-    ],
-    [
-      {t:"h2", s:"Where 1.7 million puzzles come from"},
-      {t:"p",  s:"Every puzzle has a number, and that number is all it takes to deal it: the same number always produces the same puzzle, on any device, this year or in ten years. As a puzzle is dealt, a solver checks it has exactly one solution before anybody sees it."},
-      {t:"p",  s:"The same engine deals every game at zaneysudoku.com — killer all the way up to Nightmare, classic including Coward’s, Sudoku X and Hyper — which comes to more than 1.7 million puzzles, all free, all verified the same way, plus four daily challenges."},
-      {t:"h2", s:"Go deeper"},
-      {t:"p",  s:"Three guides live alongside the game and cost nothing to read: a complete beginner’s guide to killer sudoku, a cage combinations cheat sheet giving every sum for every cage size with the forced combinations marked, and a strategy guide on the rule of 45, innies and outies."},
-      {t:"p",  s:"All three are at zaneysudoku.com, along with the solutions archive."},
-      {t:"p",  s:"Solutions to this book begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+      {t:"p",  s:"Every puzzle in this book was checked before it was printed: a solver confirmed that each grid has exactly one solution. There are no broken puzzles here and no ambiguous endings. If you are stuck, you are stuck on something that is genuinely there."},
+      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
     ]
   ],
   classic: [
@@ -818,15 +813,8 @@ const KDP_HOWTO = {
       {t:"lead", lead:"Hidden singles beat naked ones. ", s:"A cell with only one candidate left is easy to spot. A digit with only one possible cell left in a row is harder to spot and appears far more often. Look for the second kind."},
       {t:"lead", lead:"Pencil marks are not cheating. ", s:"Every puzzle in this book has a blank strip beneath it for working. When scanning stops producing placements, write the candidates down — pairs and triples only become visible once they are on the page."},
       {t:"h2", s:"About the puzzles"},
-      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution. There are no broken puzzles here and no ambiguous endings."}
-    ],
-    [
-      {t:"h2", s:"Where 1.7 million puzzles come from"},
-      {t:"p",  s:"Every puzzle has a number, and that number is all it takes to deal it: the same number always produces the same puzzle, on any device, this year or in ten years. As a puzzle is dealt, a solver checks it has exactly one solution before anybody sees it."},
-      {t:"p",  s:"The same engine deals every game at zaneysudoku.com — classic including Coward’s, killer all the way up to Nightmare, Sudoku X and Hyper — which comes to more than 1.7 million puzzles, all free, all verified the same way, plus four daily challenges."},
-      {t:"h2", s:"Go deeper"},
-      {t:"p",  s:"Guides, a solutions archive and four daily challenges are free at zaneysudoku.com, along with a cage combinations cheat sheet and a strategy guide if you ever fancy trying killer sudoku."},
-      {t:"p",  s:"Solutions to this book begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+      {t:"p",  s:"Every puzzle in this book was checked before it was printed: a solver confirmed that each grid has exactly one solution. There are no broken puzzles here and no ambiguous endings."},
+      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
     ]
   ],
   x: [
@@ -844,15 +832,8 @@ const KDP_HOWTO = {
       {t:"lead", lead:"The diagonals cut through the corners. ", s:"Each corner box holds three diagonal cells. That makes the four corner boxes far more constrained than they look, and they are usually where a stuck grid breaks open."},
       {t:"lead", lead:"Treat a diagonal as a row. ", s:"Everything you know about scanning a row applies to it — hidden singles, pairs, the lot. The only difference is that it crosses five boxes instead of three. Use the blank strip under each puzzle for candidates."},
       {t:"h2", s:"About the puzzles"},
-      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution, using the diagonal constraint. There are no broken puzzles here."}
-    ],
-    [
-      {t:"h2", s:"Where 1.7 million puzzles come from"},
-      {t:"p",  s:"Every puzzle has a number, and that number is all it takes to deal it: the same number always produces the same puzzle, on any device, this year or in ten years. As a puzzle is dealt, a solver checks it has exactly one solution before anybody sees it."},
-      {t:"p",  s:"The same engine deals every game at zaneysudoku.com — Sudoku X, Hyper, classic including Coward’s, and killer all the way up to Nightmare — which comes to more than 1.7 million puzzles, all free, all verified the same way, plus four daily challenges."},
-      {t:"h2", s:"Go deeper"},
-      {t:"p",  s:"Guides, a solutions archive and four daily challenges are free at zaneysudoku.com, including a full beginner’s guide and a strategy guide."},
-      {t:"p",  s:"Solutions to this book begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+      {t:"p",  s:"Every puzzle in this book was checked before it was printed: a solver confirmed that each grid has exactly one solution, using the diagonal constraint. There are no broken puzzles here."},
+      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
     ]
   ],
   hyper: [
@@ -870,17 +851,19 @@ const KDP_HOWTO = {
       {t:"lead", lead:"Mind the gaps. ", s:"The row and column between the windows belong to no window at all. They are the least constrained lines on the grid and are usually the last to fill."},
       {t:"lead", lead:"A window is just another box. ", s:"Scan it the same way: pick a digit, find the cells it cannot occupy, see what is left. Thirteen regions means thirteen chances to find a hidden single. Use the blank strip under each puzzle for candidates."},
       {t:"h2", s:"About the puzzles"},
-      {t:"p",  s:"Every puzzle in this volume was dealt from a numbered seed and machine-checked before it was printed: a solver confirmed that each grid has exactly one solution, using the window constraint. There are no broken puzzles here."}
-    ],
-    [
-      {t:"h2", s:"Where 1.7 million puzzles come from"},
-      {t:"p",  s:"Every puzzle has a number, and that number is all it takes to deal it: the same number always produces the same puzzle, on any device, this year or in ten years. As a puzzle is dealt, a solver checks it has exactly one solution before anybody sees it."},
-      {t:"p",  s:"The same engine deals every game at zaneysudoku.com — Hyper, Sudoku X, classic including Coward’s, and killer all the way up to Nightmare — which comes to more than 1.7 million puzzles, all free, all verified the same way, plus four daily challenges."},
-      {t:"h2", s:"Go deeper"},
-      {t:"p",  s:"Guides, a solutions archive and four daily challenges are free at zaneysudoku.com, including a full beginner’s guide and a strategy guide."},
-      {t:"p",  s:"Solutions to this book begin on page {{SOLUTIONS_PAGE}}. They will keep."}
+      {t:"p",  s:"Every puzzle in this book was checked before it was printed: a solver confirmed that each grid has exactly one solution, using the window constraint. There are no broken puzzles here."},
+      {t:"p",  s:"Solutions begin on page {{SOLUTIONS_PAGE}}. They will keep."}
     ]
   ]
+};
+
+/* The pointer to the guides, which used to sit at the end of the how-to
+   section. It reads better on the QR page, next to the address it refers to. */
+const KDP_GUIDES = {
+  killer:  "Three guides live alongside the game and cost nothing to read: a complete beginner\u2019s guide to killer sudoku, a cage combinations cheat sheet giving every sum for every cage size with the forced combinations marked, and a strategy guide on the rule of 45, innies and outies.",
+  classic: "Guides, a solutions archive and four daily challenges are there too, along with a cage combinations cheat sheet and a strategy guide if you ever fancy trying killer sudoku.",
+  x:       "Guides, a solutions archive and four daily challenges are there too, including a full beginner\u2019s guide and a strategy guide.",
+  hyper:   "Guides, a solutions archive and four daily challenges are there too, including a full beginner\u2019s guide and a strategy guide."
 };
 
 /* Difficulty copy is generated from the same tables the generator uses, so it
@@ -910,7 +893,7 @@ function kdpAboutBands(mode, bands){
     blocks.push({t:"p", s:"Our own target times run from about "+mins[0]+" minutes at the start to "+
       "around "+mins[mins.length-1]+" minutes by the end. They are benchmarks, not a judgement — nobody is timing you."});
   blocks.push({t:"p", s:"Difficulty is set by how each grid is built, not by how it looks, and every "+
-    "puzzle was machine-checked to have exactly one solution before it was printed."});
+    "puzzle was checked to have exactly one solution before it was printed."});
   return blocks;
 }
 
@@ -975,10 +958,11 @@ function kdpDefaultFront(mode, diff, opts){
     copyright: opts.copyright || [
       "Copyright © "+year+" "+(opts.author||"zaney.dev"),
       "All rights reserved. No part of this publication may be reproduced, distributed or transmitted in any form or by any means without the prior written permission of the publisher, except for brief quotations in a review.",
-      "Puzzles generated and verified by the Zaney Sudoku engine. Every puzzle in this volume has been machine-checked to have exactly one solution.",
+      "Puzzles created and verified by Zaney Sudoku. Every puzzle in this volume has been checked to have exactly one solution.",
       "First edition."
     ],
     howto: KDP_HOWTO[mode] || KDP_HOWTO.classic,
+    guides: opts.guides || KDP_GUIDES[mode] || KDP_GUIDES.classic,
     about: (opts.bands && opts.bands.length > 1)
              ? kdpAboutBands(mode, opts.bands)
              : kdpAboutDifficulty(mode, diff)
@@ -1113,6 +1097,38 @@ function kdpFlow(ctx, blocks, box, startY, align){
 /* ---------------------------------------------------------------------------
    Page rendering
 --------------------------------------------------------------------------- */
+/* The contents, worked out from the plan and the deck rather than typed in, so
+   it cannot drift from the book. Difficulty bands are read back off the deck
+   itself — consecutive puzzles sharing a level become one line — which means a
+   book that climbs lists its climb, and a single-level book gets one row.
+   Only numbered pages are listed: the front matter carries no folios, so
+   pointing at it would be pointing at a page with no number on it. */
+function kdpContents(plan, cfg){
+  const rows = [];
+  const per = plan.preset.puzzlesPerPage;
+  const pageOf = function(i){ return plan.puzzleStart + Math.floor(i/per); };
+  /* Built from the book's difficulty bands and the plan, never from the deck
+     that happens to be in memory. A proof export deals only the puzzles its
+     page limit needs, and a contents read off that short deck would print a
+     range the finished book does not have. */
+  const bands = (cfg && cfg.bands && cfg.bands.length)
+    ? cfg.bands
+    : [{difficulty: (cfg && cfg.diff) || null, count: plan.puzzleCount}];
+  let from = 0;
+  for(const b of bands){
+    const n = Math.min(b.count, plan.puzzleCount - from);
+    if(!(n > 0)) break;
+    const name = b.difficulty && typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[b.difficulty];
+    rows.push({label: (name ? name + " — puzzles " : "Puzzles ") + (from+1) + "–" + (from+n),
+               page: pageOf(from)});
+    from += n;
+  }
+  /* The divider itself is unnumbered, so point at the first page of solutions,
+     which is also the page the how-to section names. */
+  if(from > 0) rows.push({label:"Solutions", page: plan.solutionStart});
+  return rows;
+}
+
 /* Letterspacing, for the imprint line on the half title. jsPDF has charSpace
    but it is not honoured consistently across its text paths, so the tracking is
    done here and every glyph goes through ctx.text like everything else. */
@@ -1279,6 +1295,32 @@ function kdpRenderPage(ctx, plan, cfg, pg, index){
     }
   }
 
+  else if(pg.kind === "contents"){
+    let y = kdpFlow(ctx, [{t:"h1", s:"Contents"}], box, box.y + 14);
+    const rows = kdpContents(plan, cfg);
+    const size = 10, lh = size*1.95;
+    doc.setFont(KDP_FONT_FAMILY,"normal"); doc.setFontSize(size); doc.setTextColor(0,0,0);
+    for(const r of rows){
+      const base = y + size*0.78;
+      const num = String(r.page), numW = doc.getTextWidth(num);
+      ctx.text(r.label, box.x, base, {});
+      ctx.text(num, box.x + box.w, base, {align:"right"});
+      /* Dot leaders, held 5pt clear of the type at each end so nothing on this
+         page is closer to anything else than the rest of the book allows. */
+      const from = box.x + doc.getTextWidth(r.label) + 5;
+      const to   = box.x + box.w - numW - 5;
+      if(to - from > 6){
+        doc.setDrawColor(140);
+        doc.setLineWidth(0.6);
+        doc.setLineDashPattern([0.6, 3.2], 0);
+        ctx.line(from, base - size*0.22, to, base - size*0.22);
+        doc.setLineDashPattern([], 0);
+        doc.setDrawColor(0);
+      }
+      y += lh;
+    }
+  }
+
   else if(pg.kind === "playmore" || pg.kind === "backpage"){
     const back = pg.kind === "backpage";
     let y = box.y + box.h*(back ? 0.16 : 0.14);
@@ -1288,7 +1330,7 @@ function kdpRenderPage(ctx, plan, cfg, pg, index){
     y += 17*1.24 + 10;
 
     const intro = back
-      ? "Thank you for playing. Every puzzle in this book came from the same engine that runs the site, where the whole archive is free and there is a fresh daily challenge waiting."
+      ? "Thank you for playing. Every puzzle in this book was made and checked the same way as the whole free archive on the site, where there is a fresh daily challenge waiting."
       : "Scan the code, or type the address underneath it. Killer, classic, Sudoku X and Hyper, four daily challenges, a solutions archive and the guides — no charge, no account needed.";
     y = kdpFlow(ctx, [{t:"p", s:intro}], box, y, "center");
 
@@ -1304,7 +1346,7 @@ function kdpRenderPage(ctx, plan, cfg, pg, index){
     const tail = back
       ? [{t:"p", s:"If this book was good company, a short review helps another solver find it — and tells us which volume to print next."},
          {t:"p", s:"More volumes in this series are listed on the previous page."}]
-      : [{t:"p", s:"Every puzzle on the site carries a number, and that number always deals the same puzzle. The ones in this book are printed with their numbers for the same reason."}];
+      : [{t:"p", s:F.guides}];
     kdpFlow(ctx, tail, box, y, "center");
   }
 
@@ -1312,7 +1354,9 @@ function kdpRenderPage(ctx, plan, cfg, pg, index){
     const blocks = [];
     blocks.push({t:"small", s:F.title});
     for(const line of F.copyright) blocks.push({t:"small", s:line});
-    blocks.push({t:"small", s:"Edition "+cfg.bookId+" · preset "+plan.presetId+" ("+plan.preset.name+") · seeds "+cfg.seedStart+"–"+cfg.seedEnd});
+    /* The edition and seed range used to print here. They identify a reprint,
+       but they are production detail and a reader has no use for them, so they
+       live in the PDF metadata now and nowhere on the page. */
     if(F.isbn) blocks.push({t:"small", s:"ISBN "+F.isbn});
     blocks.push({t:"small", s:F.site});
     /* Copyright pages sit low on the page by convention. */
@@ -1371,10 +1415,13 @@ function kdpCollectText(cfg){
                cfg.front.isbn, cfg.front.site, cfg.runningHead,
                "1.7 million more puzzles, free", "Keep playing, free",
                "Scan the code, or type the address underneath it. Killer, classic, Sudoku X and Hyper, four daily challenges, a solutions archive and the guides — no charge, no account needed.",
-               "Thank you for playing. Every puzzle in this book came from the same engine that runs the site, where the whole archive is free and there is a fresh daily challenge waiting.",
-               "Every puzzle on the site carries a number, and that number always deals the same puzzle. The ones in this book are printed with their numbers for the same reason.",
+               "Thank you for playing. Every puzzle in this book was made and checked the same way as the whole free archive on the site, where there is a fresh daily challenge waiting.",
                "If this book was good company, a short review helps another solver find it — and tells us which volume to print next.",
-               "More volumes in this series are listed on the previous page."];
+               "More volumes in this series are listed on the previous page.",
+               "Contents", "Solutions", "Puzzles ", "0123456789", cfg.front.guides];
+  for(const b of (cfg.bands||[]))
+    if(b.difficulty && typeof DIFF_LABEL !== "undefined" && DIFF_LABEL[b.difficulty])
+      out.push(DIFF_LABEL[b.difficulty] + " — puzzles ");
   for(const line of cfg.front.copyright||[]) out.push(line);
   const blocks = [].concat.apply([], (cfg.front.howto||[])).concat(cfg.front.about||[]);
   for(const b of blocks){ if(b.s) out.push(b.s); if(b.lead) out.push(b.lead); }

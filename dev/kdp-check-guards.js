@@ -467,6 +467,71 @@ allows("the half title is three lines: company, book, volume", function () {
   return [f.imprint, f.bookName, f.volume].join(" / ");
 });
 
+allows("nothing printed in a book mentions seeds or generating puzzles", function () {
+  /* The books are sold as puzzles that were made and checked, not output. This
+     walks every string that can reach the page — front matter, how-to copy,
+     the difficulty notes, the QR pages, the series list — and refuses the
+     production vocabulary outright, so it cannot creep back in via new copy. */
+  const BANNED = /\b(seeds?|generat\w*|engine|dealt|deals|deal|dealing|algorithm\w*)\b/i;
+  const plan = mod.kdpPlan("5.06x7.81/1up", 336);
+  const found = [];
+  for (const m of [["killer", "easy"], ["classic", "medium"], ["classic", "cowards"],
+                   ["x", "expert"], ["hyper", "easy"]]) {
+    const front = mod.kdpDefaultFront(m[0], m[1], { puzzleCount: 336 });
+    const cfg = {
+      bookId: "ZS-999", mode: m[0], diff: m[1], seedStart: 1, seedEnd: 336,
+      front: front, runningHead: "X", seriesList: ["Another Volume · 160 puzzles"],
+      puzzles: [{ label: "Puzzle 1", solLabel: "1", diffLabel: "Easy" }]
+    };
+    for (const t of mod.kdpCollectText(cfg)) {
+      const hit = BANNED.exec(String(t));
+      if (hit) found.push(m.join("/") + ": \"" + hit[0] + "\" in \u201c" + String(t).slice(0, 60) + "\u2026\u201d");
+    }
+    /* And the two lines the copyright page builds for itself. */
+    if (front.copyright.join(" ").match(BANNED)) found.push(m.join("/") + ": copyright page");
+  }
+  if (found.length) throw new Error(found.slice(0, 4).join("  |  "));
+  if (plan.pages.some(function (p) { return p.kind === "howto" && p.part > 2; }))
+    throw new Error("the removed how-to page is still in the plan");
+  return "5 mode/difficulty combinations, every printed string clean";
+});
+
+allows("the contents is built from the book, not typed in", function () {
+  const plan = mod.kdpPlan("5.06x7.81/1up", 336);
+  if (!plan.pages.some(function (p) { return p.kind === "contents"; }))
+    throw new Error("no contents page in the front matter");
+  const bands = [["Easy", 112], ["Medium", 112], ["Hard", 112]];
+  const cfg = { bands: bands.map(function (b) { return { difficulty: b[0].toLowerCase(), count: b[1] }; }) };
+  const rows = mod.kdpContents(plan, cfg);
+  if (rows.length !== 4) throw new Error(rows.length + " rows, expected 3 bands + solutions");
+  /* Every row has to point at the page the book actually puts it on. */
+  const per = plan.preset.puzzlesPerPage;
+  let seen = 0;
+  for (let i = 0; i < bands.length; i++) {
+    const want = plan.puzzleStart + Math.floor(seen / per);
+    if (rows[i].page !== want)
+      throw new Error(rows[i].label + " points at " + rows[i].page + ", the book starts it on " + want);
+    if (rows[i].label.indexOf(bands[i][0] + " — puzzles " + (seen + 1) + "–" + (seen + bands[i][1])) !== 0)
+      throw new Error("wrong range: " + rows[i].label);
+    seen += bands[i][1];
+  }
+  if (rows[3].label !== "Solutions" || rows[3].page !== plan.solutionStart)
+    throw new Error("solutions row is " + JSON.stringify(rows[3]));
+  /* Every listed page must be one that actually carries a printed number. */
+  for (const r of rows)
+    if (!plan.pages[r.page - 1].folio)
+      throw new Error("contents points at page " + r.page + ", which carries no folio");
+  /* A single-level book collapses to one row plus solutions. */
+  const one = mod.kdpContents(plan, { diff: "hard", bands: [{ difficulty: "hard", count: 336 }] });
+  if (one.length !== 2) throw new Error("single-level book gave " + one.length + " rows");
+  /* And a proof, which deals only the puzzles its page limit needs, must still
+     print the contents of the finished book. */
+  const proof = mod.kdpContents(plan, Object.assign({ puzzles: [{ diffLabel: "Easy" }] }, cfg));
+  if (JSON.stringify(proof) !== JSON.stringify(rows))
+    throw new Error("a proof export prints a different contents to the book");
+  return rows.map(function (r) { return r.label.replace(/ — .*/, "") + " " + r.page; }).join(" · ");
+});
+
 allows("every mode has as many how-to-play pages as the plan reserves", function () {
   const plan = mod.kdpPlan("5.06x7.81/1up", 336);
   const reserved = plan.pages.filter(function (p) { return p.kind === "howto"; }).length;

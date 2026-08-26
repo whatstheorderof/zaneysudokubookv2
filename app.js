@@ -412,7 +412,7 @@ function saveBook() {
   for (const b of bands) if (!(b.count > 0)) return fail("Every difficulty level needs at least one puzzle.");
   if (!(seedStart > 0)) return fail("Seed start must be a positive number.");
   if (seedStart + count - 1 > 100000)
-    return fail("That seed range runs past 100,000, which is as far as the generator goes. " +
+    return fail("That seed range runs past 100,000, which is as far as the puzzle numbering goes. " +
                 "Use a lower seed start or fewer puzzles.");
 
   const id = EDITING || nextBookId();
@@ -681,7 +681,7 @@ function doExport() {
       });
     });
     const cfg = {
-      bookId: id, mode: book.mode, diff: book.difficulty,
+      bookId: id, mode: book.mode, diff: book.difficulty, bands: kdpBands(book),
       seedStart: book.seedStart, seedEnd: book.seedEnd, puzzleCount: book.puzzleCount,
       puzzles: puzzles, front: front,
       runningHead: modeName + " · " + diffName(book.difficulty),

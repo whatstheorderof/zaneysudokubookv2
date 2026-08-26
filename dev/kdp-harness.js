@@ -37,7 +37,7 @@ const EXPORTS = [
   "kdpUnsupportedChars","kdpCollectText","kdpBands","kdpBandSequence","kdpBandRanges","kdpBandTotal",
   "kdpResolvePreset","KDP_TRIMS","KDP_LAYOUTS","kdpValidDifficulties",
   "kdpPuzzlesForPages","kdpSplitBands","kdpAuditLedger","kdpFingerprint","kdpFindDuplicates",
-  "kdpCoverSpec","kdpBuildCoverTemplate","kdpSpineIn"
+  "kdpCoverSpec","kdpBuildCoverTemplate","kdpSpineIn","kdpContents","KDP_FRONT"
 ];
 
 const mod = new Function(
@@ -129,7 +129,7 @@ function build(bookId, opts) {
   });
 
   const cfg = {
-    bookId: bookId, mode: book.mode, diff: book.difficulty,
+    bookId: bookId, mode: book.mode, diff: book.difficulty, bands: mod.kdpBands(book),
     seedStart: book.seedStart, seedEnd: book.seedEnd, puzzleCount: book.puzzleCount,
     puzzles: puzzles, front: front,
     runningHead: modeName + " · " + (mod.DIFF_LABEL[book.difficulty] || book.difficulty),
