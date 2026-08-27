@@ -732,6 +732,7 @@ function doExport() {
       puzzles: puzzles, front: front,
       runningHead: modeName + " · " + diffName(book.difficulty),
       seriesList: kdpSeriesList(LIB, id),
+      assets: window.KDP_ASSETS,
       trace: false
     };
     const asm = kdpAssembler(window.jspdf.jsPDF, window.KDP_FONTS, plan, cfg, bundle.limit);
@@ -784,6 +785,10 @@ function downloadLedger() {
 }
 
 function boot() {
+  /* The planner measures text before it can paginate the cage-combinations
+     sheet, so give it the real font up front — every page count on screen
+     depends on it. */
+  kdpInstallMeasure(window.jspdf.jsPDF, window.KDP_FONTS);
   if (location.protocol === "file:") {
     setStatus($("#engineStatus"), "Open this over http, not file:// — the browser blocks the fetches it needs.", "bad");
     return;

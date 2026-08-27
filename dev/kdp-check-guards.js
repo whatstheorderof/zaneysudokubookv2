@@ -536,6 +536,85 @@ allows("the contents is built from the book, not typed in", function () {
   return rows.map(function (r) { return r.label.replace(/ — .*/, "") + " " + r.page; }).join(" · ");
 });
 
+allows("only killer books carry the cage-combinations sheet, and it follows the solutions", function () {
+  const killer = mod.kdpPlan("5.06x7.81/1up", 336, { modes: ["killer"] });
+  const classic = mod.kdpPlan("5.06x7.81/1up", 336, { modes: ["classic"] });
+  const kinds = killer.pages.map(function (p) { return p.kind; });
+  const combos = kinds.filter(function (k) { return k === "combos"; }).length;
+  if (!combos) throw new Error("a killer book has no combinations sheet");
+  if (classic.pages.some(function (p) { return p.kind === "combos"; }))
+    throw new Error("a classic book carries a killer cheat sheet");
+  if (classic.total >= killer.total)
+    throw new Error("the sheet should cost pages: killer " + killer.total + " vs classic " + classic.total);
+
+  /* After the solutions, before the series page — a reference, not an appendix
+     nobody finds. */
+  const lastSol = kinds.lastIndexOf("solutions");
+  const firstCombo = kinds.indexOf("combos");
+  const series = kinds.indexOf("series");
+  if (!(lastSol < firstCombo && firstCombo < series))
+    throw new Error("order is solutions@" + lastSol + " combos@" + firstCombo + " series@" + series);
+  if (killer.comboStart !== firstCombo + 1 || killer.comboPages !== combos)
+    throw new Error("the plan reports combos at " + killer.comboStart + " x" + killer.comboPages);
+  /* Numbered, so the contents can send a reader to it. */
+  for (let i = firstCombo; i < firstCombo + combos; i++)
+    if (!killer.pages[i].folio) throw new Error("combinations page " + (i + 1) + " carries no folio");
+  const rows = mod.kdpContents(killer, { mode: "killer", bands: [{ mode: "killer", difficulty: "easy", count: 336 }] });
+  const row = rows.filter(function (r) { return r.label === "Cage combinations"; })[0];
+  if (!row || row.page !== killer.comboStart)
+    throw new Error("the contents does not point at the sheet");
+
+  /* A variety book with killer in it gets the sheet too. */
+  const mixed = mod.kdpPlan("8.5x11/2up", 120, { modes: ["classic", "killer"] });
+  if (!mixed.comboPages) throw new Error("a variety book with killer in it has no sheet");
+  return combos + " pages at 5.06x7.81, " + killer.total + "pp vs " + classic.total + "pp without it";
+});
+
+allows("the combination tables are complete and in the site's order", function () {
+  /* Independently derived here: every set of distinct digits that sums to the
+     total, smallest-first. If the exporter and this ever disagree, one of them
+     is wrong and the printed cheat sheet is the one people would trust. */
+  const want = function (n) {
+    const out = {}, cur = [];
+    (function walk(start, left, sum) {
+      if (!left) { (out[sum] = out[sum] || []).push(cur.join("+")); return; }
+      for (let d = start; d <= 9; d++) { cur.push(d); walk(d + 1, left - 1, sum + d); cur.pop(); }
+    })(1, n, 0);
+    return out;
+  };
+  let totals = 0, combos = 0;
+  for (const n of mod.KDP_COMBO_SIZES) {
+    const w = want(n), got = mod.kdpComboTable(n);
+    const sums = Object.keys(w).map(Number).sort(function (a, b) { return a - b; });
+    if (got.length !== sums.length) throw new Error(n + "-cell: " + got.length + " totals, expected " + sums.length);
+    for (let i = 0; i < sums.length; i++) {
+      if (got[i].sum !== sums[i]) throw new Error(n + "-cell: total " + got[i].sum + " where " + sums[i] + " expected");
+      if (got[i].ways !== w[sums[i]].length || got[i].list.join(" ") !== w[sums[i]].join(" "))
+        throw new Error(n + "-cell total " + sums[i] + ": " + got[i].list.join(" "));
+      totals++; combos += got[i].ways;
+    }
+  }
+  /* The forced ones are the whole point of the sheet. */
+  const forced = mod.kdpComboForced();
+  if (forced.length !== 16) throw new Error(forced.length + " forced combinations, expected 16");
+  const two = forced.filter(function (f) { return f.cells === 2; }).map(function (f) { return f.sum + "=" + f.only; });
+  if (two.join(" ") !== "3=1+2 4=1+3 16=7+9 17=8+9") throw new Error(two.join(" "));
+  return totals + " totals, " + combos + " combinations, " + forced.length + " of them forced";
+});
+
+allows("the sheet cannot be paginated without real font metrics", function () {
+  /* Guessing the widths would make the plan and the printed page disagree, so
+     the exporter refuses rather than approximating. */
+  mod.kdpSetMeasure(null);
+  let threw = null;
+  try { mod.kdpPlan("5.06x7.81/1up", 336, { modes: ["killer"] }); }
+  catch (e) { threw = e.message; }
+  mod.kdpInstallMeasure(require("jspdf").jsPDF, H.FONTS);
+  if (!threw || threw.indexOf("measurer") < 0)
+    throw new Error("planned anyway: " + threw);
+  return threw.split("—")[1].trim().slice(0, 60) + "…";
+});
+
 allows("a book carries the rules for every kind of sudoku in it", function () {
   /* The reason this matters: a reader who opens a variety book at the killer
      section and finds only the classic rules cannot play it. */

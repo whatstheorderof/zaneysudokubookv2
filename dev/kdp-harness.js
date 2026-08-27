@@ -38,7 +38,9 @@ const EXPORTS = [
   "kdpResolvePreset","KDP_TRIMS","KDP_LAYOUTS","kdpValidDifficulties",
   "kdpPuzzlesForPages","kdpSplitBands","kdpAuditLedger","kdpFingerprint","kdpFindDuplicates",
   "kdpCoverSpec","kdpBuildCoverTemplate","kdpSpineIn","kdpContents","KDP_FRONT",
-  "kdpPlanFor","kdpBookModes","kdpHowtoFor","kdpHowtoPages"
+  "kdpPlanFor","kdpBookModes","kdpHowtoFor","kdpHowtoPages",
+  "kdpComboTable","kdpComboForced","kdpComboPages","kdpSetMeasure","kdpInstallMeasure",
+  "KDP_COMBO_SIZES"
 ];
 
 const mod = new Function(
@@ -52,6 +54,14 @@ const win = {};
 new Function("window", fontSrc)(win);
 const FONTS = win.KDP_FONTS;
 if (!FONTS || !FONTS.regular) throw new Error("fonts.js did not produce KDP_FONTS");
+
+const assetSrc = fs.readFileSync(path.join(ROOT, "assets.js"), "utf8");
+new Function("window", assetSrc)(win);
+const ASSETS = win.KDP_ASSETS;
+if (!ASSETS || !ASSETS.imprint) throw new Error("assets.js did not produce KDP_ASSETS");
+
+/* The planner measures text before it can paginate the combinations sheet. */
+mod.kdpInstallMeasure(jsPDF, FONTS);
 
 const books = JSON.parse(fs.readFileSync(path.join(ROOT, "books.json"), "utf8"));
 
@@ -141,6 +151,7 @@ function build(bookId, opts) {
     puzzles: puzzles, front: front,
     runningHead: modeName + " · " + (mod.DIFF_LABEL[book.difficulty] || book.difficulty),
     seriesList: mod.kdpSeriesList(books, bookId),
+    assets: ASSETS,
     trace: true
   };
 
@@ -156,6 +167,20 @@ module.exports = { mod: mod, books: books, build: build, dealOne: dealOne, FONTS
                    ROOT: ROOT, engineSha: engineSha, engineSrc: engine };
 
 if (require.main === module) {
+  /* Dump the exporter's own combination tables, so dev/check-combos.py can hold
+     them up against the site's page rather than only against its own arithmetic. */
+  if (process.argv[2] === "--combos") {
+    const out = {};
+    for (const n of mod.KDP_COMBO_SIZES) {
+      out[n] = {};
+      for (const r of mod.kdpComboTable(n)) out[n][r.sum] = r.list;
+    }
+    const dest = process.argv[3] || path.join(ROOT, "out", "combos.json");
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, JSON.stringify(out));
+    console.log("  wrote " + dest);
+    process.exit(0);
+  }
   const bookId = process.argv[2];
   const outDir = process.argv[3] || path.join(ROOT, "out");
   const proof = process.argv[4] ? parseInt(process.argv[4], 10) : null;   /* proof-mode page limit */

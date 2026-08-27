@@ -348,6 +348,17 @@ function kdpPlan(presetId, puzzleCount, opts){
     push("solutions", {items, folio:true, slotCount:P.solsPerPage});
   }
 
+  /* The cage-combinations sheet, for books that hold killer puzzles. It goes
+     after the solutions, where a reference belongs, and it is numbered so the
+     contents can point at it. */
+  const wantsCombos = !!(opts.modes && opts.modes.indexOf("killer") >= 0);
+  const comboStart = wantsCombos ? pages.length + 1 : 0;
+  let comboPages = 0;
+  if(wantsCombos){
+    comboPages = kdpComboPages(presetId).length;
+    for(let i=1;i<=comboPages;i++) push("combos", {part:i, folio:true});
+  }
+
   /* Back matter: series page at last-1, blank at last, total even. Padding goes
      BEFORE the series page so it keeps its position (and stays on a recto). */
   let pad = 0;
@@ -364,6 +375,7 @@ function kdpPlan(presetId, puzzleCount, opts){
 
   return {
     presetId, preset:P, puzzleCount, pages, total, howtoPages, modes: (opts.modes||null),
+    comboStart: comboPages ? comboStart : 0, comboPages,
     puzzlePages: puzPages, solutionPages: solPages,
     puzzleStart, dividerPage, solutionStart: solStart,
     recotFiller: filler, evenPad: pad,
@@ -1040,6 +1052,196 @@ function kdpDefaultFront(mode, diff, opts){
 }
 
 /* ---------------------------------------------------------------------------
+   Cage combinations — the back-matter cheat sheet.
+
+   The same tables as zaneysudoku.com/killer-sudoku-combinations.html, but
+   computed here rather than copied: every way to fill an n-cell cage is every
+   set of n distinct digits from 1 to 9 that adds to the total, in the order the
+   site lists them. dev/check-combos.py parses the site's page and asserts the
+   two agree, so the printed sheet cannot drift from the one online.
+
+   Only killer books carry it, and it goes after the solutions.
+--------------------------------------------------------------------------- */
+const KDP_COMBO_SIZES = [2, 3, 4, 5];
+const KDP_COMBO_NAME = {2:"Two-cell cages", 3:"Three-cell cages",
+                        4:"Four-cell cages", 5:"Five-cell cages"};
+
+function kdpComboTable(n){
+  const bySum = {}, cur = [];
+  (function walk(start, left, sum){
+    if(left === 0){ (bySum[sum] = bySum[sum] || []).push(cur.join("+")); return; }
+    for(let d = start; d <= 9; d++){ cur.push(d); walk(d+1, left-1, sum+d); cur.pop(); }
+  })(1, n, 0);
+  const out = [];
+  for(const k of Object.keys(bySum).map(Number).sort(function(a,b){ return a-b; }))
+    out.push({sum: k, ways: bySum[k].length, list: bySum[k]});
+  return out;
+}
+
+/* The sums with exactly one way to fill them — the ones worth memorising. */
+function kdpComboForced(){
+  const out = [];
+  for(const n of KDP_COMBO_SIZES)
+    for(const r of kdpComboTable(n))
+      if(r.ways === 1) out.push({cells: n, sum: r.sum, only: r.list[0]});
+  return out;
+}
+
+/* Text measurement. The section's page count has to be known before anything is
+   laid out, and that needs real font metrics, so the app installs a measurer
+   built from the same jsPDF and the same embedded font it will print with.
+   Guessing instead would make the plan and the page disagree. */
+let KDP_MEASURE = null;
+let KDP_COMBO_CACHE = {};
+function kdpSetMeasure(fn){ KDP_MEASURE = fn; KDP_COMBO_CACHE = {}; }
+function kdpMeasure(str, pt, weight){
+  if(!KDP_MEASURE)
+    throw new Error("EXPORT ABORTED — no text measurer installed. The cage-combinations "+
+      "section cannot be paginated without one; call kdpSetMeasure() with a function "+
+      "(text, pt, weight) => width in points, built from jsPDF and the embedded font.");
+  return KDP_MEASURE(str, pt, weight);
+}
+
+const KDP_COMBO_STYLE = {
+  h1:   {size: 17,  font: "bold",   before: 0,  after: 12, lead: 1.24},
+  h2:   {size: 11.5,font: "bold",   before: 14, after: 6,  lead: 1.24},
+  p:    {size: 8.6, font: "normal", before: 0,  after: 8,  lead: 1.42},
+  lead: {size: 8.6, font: "normal", before: 0,  after: 8,  lead: 1.42},
+  head: {size: 7.4, font: "bold",   before: 0,  after: 3,  lead: 1.5},
+  row:  {size: 8,   font: "normal", before: 0,  after: 0,  lead: 1.5},
+  gap:  6
+};
+
+/* The width the section is set to. Deliberately the narrowest live area the
+   book could end up with — the widest gutter tier — because the gutter depends
+   on the page count and the page count depends on this. Fixing it at the worst
+   case breaks the loop, and a book with a slimmer gutter simply gets a little
+   more white to the outside. */
+function kdpComboWidth(P){
+  const trim = kdpTrimPt(P);
+  const worst = KDP_GUTTER_TIERS[KDP_GUTTER_TIERS.length - 1].gutterIn;
+  return trim[0] - (KDP_MARGIN_IN + Math.max(worst, KDP_GUTTER_FLOOR_IN)) * KDP_IN;
+}
+
+function kdpComboWrap(str, width, st){
+  /* Word wrap against real metrics; returns the number of lines. */
+  const words = String(str).split(" ");
+  let lines = 1, cur = "";
+  for(const w of words){
+    const next = cur ? cur + " " + w : w;
+    if(kdpMeasure(next, st.size, st.font) <= width || !cur) cur = next;
+    else { lines++; cur = w; }
+  }
+  return lines;
+}
+
+/* The section as a list of atoms, each with the height it will occupy. Atoms
+   are what get packed into pages, so nothing can be measured one way and drawn
+   another. */
+function kdpComboAtoms(width){
+  const S = KDP_COMBO_STYLE;
+  const atoms = [];
+  const prose = function(kind, text, lead){
+    const st = S[kind];
+    const w = lead ? width : width;
+    const n = kdpComboWrap((lead ? lead + text : text), w, st);
+    atoms.push({t: kind, s: text, lead: lead || null,
+                h: st.before + n*st.size*st.lead + st.after});
+  };
+
+  prose("h1", "Cage combinations");
+  prose("p", "A cage's total limits which digits can live inside it. Some totals are generous — a three-cell cage of 15 can be filled eight ways. Others are a gift: a two-cell cage of 17 can only be 8+9. Spotting the forced ones is the single biggest upgrade you can make to your solving.");
+  prose("p", "Every combination below is a set of different digits, because a digit cannot repeat inside a cage. The order within a cage is for you to work out.");
+
+  /* Forced table: three narrow columns, one line each. */
+  prose("h2", "The forced combinations");
+  prose("p", "These totals have exactly one possible combination. When you see one you know every digit in the cage at once — you just do not know the order yet.");
+  const forced = kdpComboForced();
+  const colW = [width*0.22, width*0.16, width*0.62];
+  atoms.push({t:"fhead", cols: colW, h: S.head.size*S.head.lead + S.head.after});
+  for(const f of forced)
+    atoms.push({t:"frow", f: f, cols: colW, h: S.row.size*S.row.lead});
+  atoms.push({t:"space", h: S.gap});
+  prose("p", "The forced totals always come in pairs at the extremes — the two smallest and the two largest a cage of that size can hold. If a total is near the limit for its size, check here first.");
+
+  const notes = {
+    2: "Totals run from 3 to 17. A two-cell cage can never make 10 out of 5+5, so 10 has four options rather than five.",
+    3: "Totals run from 6 to 24. The middle of the range is the murkiest, with up to eight combinations each — lean on the row and box constraints to narrow them.",
+    4: "Totals run from 10 to 30. Even the crowded ones exclude digits, which is often more useful than knowing what is in the cage.",
+    5: "Totals run from 15 to 35. At this size the extremes are still worth memorising; the middle is best used for what it rules out."
+  };
+  for(const n of KDP_COMBO_SIZES){
+    prose("h2", KDP_COMBO_NAME[n]);
+    prose("p", notes[n]);
+    const rows = kdpComboTable(n);
+    /* One fixed column width per cage size, so the grid lines up down the page
+       instead of wrapping ragged. */
+    let itemW = 0;
+    for(const r of rows) for(const c of r.list)
+      itemW = Math.max(itemW, kdpMeasure(c, S.row.size, S.row.font));
+    const sumW = kdpMeasure("Total", S.head.size, S.head.font) + 10;
+    const waysW = kdpMeasure("Ways", S.head.size, S.head.font) + 10;
+    const listW = width - sumW - waysW;
+    const perLine = Math.max(1, Math.floor(listW / (itemW + S.gap*1.6)));
+    atoms.push({t:"thead", n: n, sumW: sumW, waysW: waysW,
+                h: S.head.size*S.head.lead + S.head.after});
+    for(const r of rows){
+      const lines = Math.ceil(r.ways / perLine);
+      atoms.push({t:"trow", r: r, n: n, sumW: sumW, waysW: waysW,
+                  perLine: perLine, itemW: itemW, h: lines*S.row.size*S.row.lead});
+    }
+    atoms.push({t:"space", h: S.gap});
+  }
+
+  prose("h2", "How to use these tables");
+  prose("lead", "Scan the puzzle for any cage whose total appears in the forced table, and pencil those digits in straight away.", "Start at the extremes. ");
+  prose("lead", "A two-cell cage of 16 is 7+9 — but if a 7 already sits in that row, the cage cell in that row must be the 9.", "Intersect with the sudoku rules. ");
+  prose("lead", "Even a total with many combinations rules digits out. A two-cell cage of 5 is 1+4 or 2+3, so it can never hold 5, 6, 7, 8 or 9 — five eliminations for free.", "Use the exclusions. ");
+  prose("lead", "Cage combinations and the rule of 45 together will carry you through most hard puzzles without a guess.", "Combine with the rule of 45. ");
+  return atoms;
+}
+
+/* Pack the atoms into pages. A table header is never left stranded at the foot
+   of a page with nothing under it, and a heading never ends a page either. */
+function kdpComboPages(presetId){
+  presetId = kdpResolvePreset(presetId);
+  if(KDP_COMBO_CACHE[presetId]) return KDP_COMBO_CACHE[presetId];
+  const P = KDP_PRESETS[presetId];
+  if(!P) throw new Error("Unknown preset "+presetId);
+  const width = kdpComboWidth(P);
+  const trim = kdpTrimPt(P);
+  const height = trim[1] - 2*KDP_MARGIN_IN*KDP_IN - KDP_LAYOUT.footBlockPt;
+
+  const atoms = kdpComboAtoms(width);
+  const pages = [];
+  let cur = [], used = 0, head = null;
+  const flush = function(){ if(cur.length){ pages.push(cur); cur = []; used = 0; } };
+  for(let i = 0; i < atoms.length; i++){
+    const a = atoms[i];
+    if(a.t === "thead" || a.t === "fhead") head = a;
+    if(a.t === "h1" || a.t === "h2") head = null;
+    if(used + a.h > height && cur.length){
+      /* Do not orphan a heading or a table header at the foot of a page. */
+      while(cur.length && /^(h1|h2|thead|fhead)$/.test(cur[cur.length-1].t)) i--, cur.pop();
+      flush();
+      /* A table running over a page break repeats its column headings, because
+         a reference table whose columns are named on the previous page is a
+         table you have to flip back and forth to read. */
+      if(head && (atoms[i+1] || a).t !== "thead" && (atoms[i+1] || a).t !== "fhead" &&
+         /^(trow|frow)$/.test(a.t)){
+        const cont = Object.assign({}, head, {cont: true});
+        cur.push(cont); used += cont.h;
+      }
+    }
+    if(a.t === "space" && used === 0) continue;
+    cur.push(a); used += a.h;
+  }
+  flush();
+  KDP_COMBO_CACHE[presetId] = pages;
+  return pages;
+}
+
+/* ---------------------------------------------------------------------------
    Drawing context. Every mark goes through here so the validator can walk the
    drawing calls afterwards and bounds-check them against the mirrored live
    area, rather than eyeballing a render.
@@ -1064,6 +1266,13 @@ function kdpCtx(doc, trace){
     circle: function(x,y,r,style){
       this.doc.circle(x,y,r,style);
       this._m(x-r, y-r, 2*r, 2*r, style !== "F");
+    },
+    /* Images go through here for the same reason everything else does: the
+       validator walks the marks afterwards and an image that strayed into a
+       margin has to be as visible to it as a stray line would be. */
+    image: function(data,x,y,w,h,alias){
+      this.doc.addImage(data, "PNG", x, y, w, h, alias, "NONE");
+      this._m(x,y,w,h,false,"image");
     },
     text: function(str,x,y,o){
       o = o||{};
@@ -1201,6 +1410,7 @@ function kdpContents(plan, cfg){
   /* The divider itself is unnumbered, so point at the first page of solutions,
      which is also the page the how-to section names. */
   if(from > 0) rows.push({label:"Solutions", page: plan.solutionStart});
+  if(plan.comboPages) rows.push({label:"Cage combinations", page: plan.comboStart});
   return rows;
 }
 
@@ -1234,6 +1444,91 @@ function kdpDrawQR(ctx, x, y, size){
       while(k < n && row[k] === "1") k++;
       ctx.rect(x + c*m, y + r*m, (k-c)*m, m*1.02, "F");
       c = k;
+    }
+  }
+}
+
+/* Draw one page of the cage-combinations sheet. The atoms were measured when
+   the book was planned; this only positions them, so what is printed is exactly
+   what the page count was worked out from. */
+function kdpRenderCombosPage(ctx, plan, box, part){
+  const doc = ctx.doc, S = KDP_COMBO_STYLE;
+  const page = kdpComboPages(plan.presetId)[part-1] || [];
+  const width = kdpComboWidth(plan.preset);
+  let y = box.y;
+
+  const line = function(str, x, baseY, st, weight){
+    doc.setFont(KDP_FONT_FAMILY, weight || st.font);
+    doc.setFontSize(st.size);
+    ctx.text(str, x, baseY, {});
+  };
+
+  for(const a of page){
+    if(a.t === "space"){ y += a.h; continue; }
+
+    if(a.t === "h1" || a.t === "h2" || a.t === "p" || a.t === "lead"){
+      const st = S[a.t];
+      y += st.before;
+      const runs = a.lead ? [{s:a.lead, font:"bold"}, {s:a.s, font:"normal"}]
+                          : [{s:a.s, font:st.font}];
+      const lines = kdpBreakRuns(doc, runs, width, st.size);
+      for(const ln of lines){
+        let x = box.x;
+        for(const t of ln){
+          doc.setFont(KDP_FONT_FAMILY, t.font); doc.setFontSize(st.size);
+          if(t.space) x += doc.getTextWidth(" ");
+          ctx.text(t.s, x, y + st.size*0.78, {});
+          x += t.w;
+        }
+        y += st.size*st.lead;
+      }
+      y += st.after;
+      continue;
+    }
+
+    if(a.t === "fhead"){
+      doc.setTextColor(105,105,105);
+      line("Cage", box.x, y + S.head.size*0.78, S.head);
+      line("Total", box.x + a.cols[0], y + S.head.size*0.78, S.head);
+      line(a.cont ? "Only combination (continued)" : "Only combination",
+           box.x + a.cols[0] + a.cols[1], y + S.head.size*0.78, S.head);
+      doc.setTextColor(0,0,0);
+      y += a.h;
+      continue;
+    }
+    if(a.t === "frow"){
+      const b = y + S.row.size*0.78;
+      line(a.f.cells + " cells", box.x, b, S.row);
+      line(String(a.f.sum), box.x + a.cols[0], b, S.row, "bold");
+      line(a.f.only, box.x + a.cols[0] + a.cols[1], b, S.row, "bold");
+      y += a.h;
+      continue;
+    }
+    if(a.t === "thead"){
+      doc.setTextColor(105,105,105);
+      line("Total", box.x, y + S.head.size*0.78, S.head);
+      line("Ways", box.x + a.sumW, y + S.head.size*0.78, S.head);
+      line(a.cont ? "Combinations (continued)" : "Combinations",
+           box.x + a.sumW + a.waysW, y + S.head.size*0.78, S.head);
+      doc.setTextColor(0,0,0);
+      y += a.h;
+      continue;
+    }
+    if(a.t === "trow"){
+      const b = y + S.row.size*0.78;
+      line(String(a.r.sum), box.x, b, S.row, "bold");
+      doc.setTextColor(105,105,105);
+      line(String(a.r.ways), box.x + a.sumW, b, S.row);
+      doc.setTextColor(0,0,0);
+      const listX = box.x + a.sumW + a.waysW;
+      const step = (width - a.sumW - a.waysW) / a.perLine;
+      for(let i=0;i<a.r.list.length;i++){
+        const col = i % a.perLine, row = (i / a.perLine) | 0;
+        line(a.r.list[i], listX + col*step, b + row*S.row.size*S.row.lead, S.row,
+             a.r.ways === 1 ? "bold" : "normal");
+      }
+      y += a.h;
+      continue;
     }
   }
 }
@@ -1396,6 +1691,10 @@ function kdpRenderPage(ctx, plan, cfg, pg, index){
     }
   }
 
+  else if(pg.kind === "combos"){
+    kdpRenderCombosPage(ctx, plan, box, pg.part);
+  }
+
   else if(pg.kind === "playmore" || pg.kind === "backpage"){
     const back = pg.kind === "backpage";
     let y = box.y + box.h*(back ? 0.16 : 0.14);
@@ -1434,9 +1733,21 @@ function kdpRenderPage(ctx, plan, cfg, pg, index){
        live in the PDF metadata now and nowhere on the page. */
     if(F.isbn) blocks.push({t:"small", s:"ISBN "+F.isbn});
     blocks.push({t:"small", s:F.site});
+    /* The imprint mark goes bottom-right of the copyright block. It is an
+       opaque image, not a transparent one — a print interior is black ink on
+       white paper and a transparent PNG is a colour-management argument nobody
+       needs — so the block is moved up to leave it clear space. Set beside the
+       text instead, its white ground rubbed out the end of a line. */
+    const mark = cfg.assets && cfg.assets.imprint;
+    const mw = mark ? Math.min(box.w*0.22, 120) : 0;
+    const mh = mark ? mw * (cfg.assets.imprintH / cfg.assets.imprintW) : 0;
     /* Copyright pages sit low on the page by convention. */
-    const h = 8*1.42*18;
-    kdpFlow(ctx, blocks, box, Math.max(box.y, box.y + box.h - h));
+    const h = 8*1.42*18 + (mark ? mh + 12 : 0);
+    const endY = kdpFlow(ctx, blocks, box, Math.max(box.y, box.y + box.h - h));
+    if(mark){
+      const my = Math.min(endY + 12, box.y + box.h - mh);
+      ctx.image(mark, box.x + box.w - mw, my, mw, mh, "zaney-imprint");
+    }
   }
 
   else if(pg.kind === "howto"){
@@ -1862,6 +2173,18 @@ function kdpAbortMessage(plan, cfg, fit, where){
     "The grid is already filling the live area, so there is nothing left to reclaim.\n\n"+
     "This preset/mode combination does not work. Use a larger trim (preset B or C) for "+
     (KDP_MODE_NAME[cfg.mode]||cfg.mode)+", or fewer puzzles per page.";
+}
+
+/* Build the measurer the planner needs, from the very jsPDF and font the book
+   will be printed with. One throwaway document, made once. */
+function kdpInstallMeasure(jsPDFctor, fonts){
+  const doc = new jsPDFctor({unit:"pt", format:[600,800]});
+  kdpRegisterFonts(doc, fonts);
+  kdpSetMeasure(function(str, pt, weight){
+    doc.setFont(KDP_FONT_FAMILY, weight || "normal");
+    doc.setFontSize(pt);
+    return doc.getTextWidth(str);
+  });
 }
 
 function kdpMakeDoc(jsPDFctor, plan){

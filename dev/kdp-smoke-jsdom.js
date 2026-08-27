@@ -44,9 +44,10 @@ const html = rawHtml.replace(/<script src="([^"]+)"><\/script>/g, function (_, s
   scriptSrcs.push(src);
   return "";
 });
-check("index.html loads its five scripts in order", scriptSrcs.length === 5 &&
+check("index.html loads its six scripts in order", scriptSrcs.length === 6 &&
   /jspdf/.test(scriptSrcs[0]) && /engine\.js/.test(scriptSrcs[1]) &&
-  /fonts\.js/.test(scriptSrcs[2]) && /core\.js/.test(scriptSrcs[3]) && /app\.js/.test(scriptSrcs[4]),
+  /fonts\.js/.test(scriptSrcs[2]) && /assets\.js/.test(scriptSrcs[3]) &&
+  /core\.js/.test(scriptSrcs[4]) && /app\.js/.test(scriptSrcs[5]),
   scriptSrcs.join(" -> "));
 
 const errors = [];
@@ -99,7 +100,7 @@ const settle = function (ms) { return new Promise(function (r) { setTimeout(r, m
 const shown = function (sel) { return win.getComputedStyle($(sel)).display !== "none"; };
 
 function run() {
-  check("all five scripts evaluate with no uncaught error", errors.length === 0,
+  check("all six scripts evaluate with no uncaught error", errors.length === 0,
     errors.length ? errors.slice(0, 2).join(" | ") : "clean load");
   check("the vendored jsPDF is a working UMD build",
     typeof G("window.jspdf") === "object" && typeof G("window.jspdf.jsPDF") === "function");
@@ -108,6 +109,10 @@ function run() {
   check("the embedded font subset loaded",
     !!G("window.KDP_FONTS").regular && !!G("window.KDP_FONTS").charset,
     G("window.KDP_FONTS").charset.length + " codepoints available to the interior");
+  check("the imprint mark loaded, ready for the copyright page",
+    /^data:image\/png;base64,/.test(G("window.KDP_ASSETS").imprint) &&
+    G("window.KDP_ASSETS").imprintW > 0 && G("window.KDP_ASSETS").imprintH > 0,
+    G("window.KDP_ASSETS").imprintW + "x" + G("window.KDP_ASSETS").imprintH + " px");
   check("the exporter core is present",
     ["kdpPlan", "kdpPricing", "kdpLedgerCheck", "kdpAssembler", "kdpBands", "kdpBandSequence"]
       .every(function (n) { return typeof G(n) === "function"; }));
@@ -179,8 +184,9 @@ function run() {
       "target " + $("#fTarget").value + " pages");
     $("#fTarget").value = "404";
     $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
-    check("asking for 404 pages works back to 336 puzzles",
-      /336 puzzles/.test($("#fFit").textContent) && /404 pages/.test($("#fFit").textContent),
+    /* A killer book, so the six-page cage-combinations sheet is in the count. */
+    check("asking for 404 pages works back to 330 puzzles",
+      /330 puzzles/.test($("#fFit").textContent) && /404 pages/.test($("#fFit").textContent),
       $("#fFit").textContent.trim());
     $("#fTarget").value = "110";
     $("#fTarget").dispatchEvent(new win.Event("input", { bubbles: true }));
@@ -189,8 +195,8 @@ function run() {
       $("#fFit").textContent.trim());
     $("#fTrim").value = "8.5x11"; $("#fLayout").value = "2up";
     $("#fLayout").dispatchEvent(new win.Event("change", { bubbles: true }));
-    check("the flat-fee ceiling of 110 pages gives 156 puzzles at 8.5x11 two-up",
-      /156 puzzles/.test($("#fFit").textContent), $("#fFit").textContent.trim());
+    check("the flat-fee ceiling of 110 pages gives 152 killer puzzles at 8.5x11 two-up",
+      /152 puzzles/.test($("#fFit").textContent), $("#fFit").textContent.trim());
     $("#fTrim").value = "5.06x7.81"; $("#fLayout").value = "1up";
     $("#fLayout").dispatchEvent(new win.Event("change", { bubbles: true }));
 

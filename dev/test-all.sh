@@ -13,6 +13,9 @@ done
 node check-layout.js
 node check-jspdf-pin.js
 python3 build-kdp-fonts.py --check
+python3 build-kdp-assets.py --check
+node kdp-harness.js --combos "$OUT/combos.json" >/dev/null
+KDP_COMBOS_JSON="$OUT/combos.json" python3 check-combos.py
 if [ -n "${ZS_SITE:-}" ]; then
   python3 sync-engine.py --check --from "$ZS_SITE/index.html"
 else
