@@ -454,6 +454,30 @@ refuses("a character the embedded subset lacks aborts the export", function () {
   mod.kdpAssembler(require("jspdf").jsPDF, H.FONTS, plan, cfg, null);
 }, "cannot render");
 
+allows("every book credits its maker and its muse on the copyright page", function () {
+  const out = [];
+  for (const m of [["killer", "easy"], ["classic", "medium"], ["x", "expert"], ["hyper", "easy"]]) {
+    const f = mod.kdpDefaultFront(m[0], m[1], {});
+    const i = f.copyright.indexOf("Created by Zane Morris-Stewart.");
+    const j = f.copyright.indexOf("Mused by Caroline R. Grant.");
+    if (i < 0) throw new Error(m[0] + ": no maker credit");
+    if (j < 0) throw new Error(m[0] + ": no muse credit");
+    /* The muse line goes in the middle: first would read as the publisher,
+       last as an afterthought. */
+    if (j === 0 || j === f.copyright.length - 1)
+      throw new Error(m[0] + ": the muse credit is at position " + j + " of " + f.copyright.length);
+    if (!(i < j)) throw new Error(m[0] + ": the credits are out of order");
+    /* Both have to be printable by the embedded subset, hyphen included. */
+    const miss = mod.kdpUnsupportedChars({ front: f, puzzles: [] }, H.FONTS.charset);
+    if (miss.length) throw new Error(m[0] + ": " + miss.map(function (x) { return x.code; }).join(","));
+    out.push(m[0] + " " + i + "/" + j);
+  }
+  /* Overridable, and clearable, without breaking the page. */
+  const none = mod.kdpDefaultFront("killer", "easy", { creator: "", muse: "" });
+  if (none.copyright.join(" ").indexOf("Morris-Stewart") >= 0) throw new Error("creator not clearable");
+  return out.join(", ") + " (index of maker/muse in the block)";
+});
+
 allows("the half title is three lines: company, book, volume", function () {
   const f = mod.kdpDefaultFront("killer", "easy", {});
   if (f.imprint !== "Zaney Sudoku") throw new Error("imprint is " + f.imprint);

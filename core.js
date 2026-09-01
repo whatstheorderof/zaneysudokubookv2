@@ -1037,12 +1037,21 @@ function kdpDefaultFront(mode, diff, opts){
     author:   opts.author  || "zaney.dev",
     isbn:     opts.isbn    || "",
     site:     opts.site    || "zaneysudoku.com",
+    /* The two credits every Zaney book carries. Overridable, but they default
+       on: the maker's line sits under the copyright, and the muse's line sits
+       in the middle of the block where it was asked to go — not first, where it
+       would read as the publisher, and not last, where it would read as an
+       afterthought. */
+    creator: opts.creator === undefined ? "Created by Zane Morris-Stewart." : opts.creator,
+    muse:    opts.muse    === undefined ? "Mused by Caroline R. Grant."    : opts.muse,
     copyright: opts.copyright || [
       "Copyright © "+year+" "+(opts.author||"zaney.dev"),
+      opts.creator === undefined ? "Created by Zane Morris-Stewart." : opts.creator,
       "All rights reserved. No part of this publication may be reproduced, distributed or transmitted in any form or by any means without the prior written permission of the publisher, except for brief quotations in a review.",
+      opts.muse === undefined ? "Mused by Caroline R. Grant." : opts.muse,
       "Puzzles created and verified by Zaney Sudoku. Every puzzle in this volume has been checked to have exactly one solution.",
       "First edition."
-    ],
+    ].filter(Boolean),
     howto: kdpHowtoFor(modes),
     guides: opts.guides || (mixed ? KDP_GUIDES.mixed : (KDP_GUIDES[mode] || KDP_GUIDES.classic)),
     about: (opts.bands && opts.bands.length > 1)
